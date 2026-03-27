@@ -1,30 +1,81 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, send_file, jsonify
-from models import  calculate_ship_dates_for_open_orders, get_sales_orders_paginated, get_orders_for_calendar, check_order_stock_availability, update_all_sales_order_lines_status, is_line_in_sales_order, update_sales_order_line_status, update_multiple_sales_order_lines_status, RFQLine, generate_sales_order_acknowledgment, get_sales_order_lines_with_rfq_options, update_sales_order_lines, get_rfq_lines_for_part_and_customer, get_sales_order_lines_with_status, get_sales_order_lines_with_status_and_po, generate_sales_order_acknowledgment_file, get_sales_order_lines_with_po, get_max_line_number, update_sales_order_line, get_sales_orders, insert_sales_order_line, get_sales_order_by_id, insert_sales_order, get_customers, get_salespeople, update_sales_order, get_sales_order_lines, get_sales_statuses
 import datetime
-from urllib.parse import quote
 import os
-import pythoncom
-import win32com.client as win32
-import pdfkit
+from urllib.parse import quote
+
+from flask import (
+    Blueprint,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
+
+from models import (
+    RFQLine,
+    calculate_ship_dates_for_open_orders,
+    check_order_stock_availability,
+    generate_sales_order_acknowledgment,
+    generate_sales_order_acknowledgment_file,
+    get_customers,
+    get_max_line_number,
+    get_orders_for_calendar,
+    get_rfq_lines_for_part_and_customer,
+    get_sales_order_by_id,
+    get_sales_order_lines,
+    get_sales_order_lines_with_po,
+    get_sales_order_lines_with_rfq_options,
+    get_sales_order_lines_with_status,
+    get_sales_order_lines_with_status_and_po,
+    get_sales_orders,
+    get_sales_orders_paginated,
+    get_sales_statuses,
+    get_salespeople,
+    insert_sales_order,
+    insert_sales_order_line,
+    is_line_in_sales_order,
+    update_all_sales_order_lines_status,
+    update_multiple_sales_order_lines_status,
+    update_sales_order,
+    update_sales_order_line,
+    update_sales_order_line_status,
+    update_sales_order_lines,
+)
+
+try:
+    import pythoncom
+    import win32com.client as win32
+
+    _WIN32_AVAILABLE = True
+except ImportError:
+    _WIN32_AVAILABLE = False
 from datetime import datetime, timedelta
 
-from db import db_cursor, execute as db_execute
+import pdfkit
 
+from db import db_cursor
+from db import execute as db_execute
 
-sales_orders_bp = Blueprint('sales_orders', __name__)
+sales_orders_bp = Blueprint("sales_orders", __name__)
 
 
 def _using_postgres() -> bool:
-    return bool(os.getenv('DATABASE_URL') and os.getenv('DATABASE_URL').startswith(('postgres://', 'postgresql://')))
+    return bool(
+        os.getenv("DATABASE_URL")
+        and os.getenv("DATABASE_URL").startswith(("postgres://", "postgresql://"))
+    )
 
 
 def _prepare_query(query: str) -> str:
-    return query.replace('?', '%s') if _using_postgres() else query
+    return query.replace("?", "%s") if _using_postgres() else query
 
 
 def _execute_with_cursor(cur, query: str, params=None):
     cur.execute(_prepare_query(query), params or [])
     return cur
+
 
 def generate_breadcrumbs(*crumbs):
     breadcrumbs = []
@@ -32,34 +83,41 @@ def generate_breadcrumbs(*crumbs):
         breadcrumbs.append((crumb, path))
     return breadcrumbs
 
-@sales_orders_bp.route('/', methods=['GET', 'POST'])
+
+@sales_orders_bp.route("/", methods=["GET", "POST"])
 def list_sales_orders():
-    if request.method == 'POST':
-        customer_id = request.form['customer_id']
-        customer_po_ref = request.form['customer_po_ref']
+    if request.method == "POST":
+        customer_id = request.form["customer_id"]
+        customer_po_ref = request.form["customer_po_ref"]
         insert_sales_order(customer_id, customer_po_ref)
-        return redirect(url_for('sales_orders.list_sales_orders'))
+        return redirect(url_for("sales_orders.list_sales_orders"))
 
     # Pagination parameters
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 25, type=int)
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 25, type=int)
 
     # Filter parameters
-    customer_id = request.args.get('customer_id', type=int)
-    salesperson_id = request.args.get('salesperson_id', type=int)
-    status_id = request.args.get('status_id', type=int)
-    search = request.args.get('search', '').strip()
-    show_mismatches_only = request.args.get('show_mismatches', 'false').lower() == 'true'
-    date_from = request.args.get('date_from', '').strip()
-    date_to = request.args.get('date_to', '').strip()
+    customer_id = request.args.get("customer_id", type=int)
+    salesperson_id = request.args.get("salesperson_id", type=int)
+    status_id = request.args.get("status_id", type=int)
+    search = request.args.get("search", "").strip()
+    show_mismatches_only = (
+        request.args.get("show_mismatches", "false").lower() == "true"
+    )
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
 
     # Sorting parameters - default to most recent first when showing mismatches
-    sort_by = request.args.get('sort_by', 'date_entered' if show_mismatches_only else 'id')
-    sort_order = request.args.get('sort_order', 'desc')
+    sort_by = request.args.get(
+        "sort_by", "date_entered" if show_mismatches_only else "id"
+    )
+    sort_order = request.args.get("sort_order", "desc")
 
     # Get data
     customers = get_customers()
-    customers = sorted(customers, key=lambda x: x['name'].lower())  # Sort alphabetically
+    customers = sorted(
+        customers, key=lambda x: x["name"].lower()
+    )  # Sort alphabetically
     salespeople = get_salespeople()
     statuses = get_sales_statuses()
 
@@ -75,68 +133,74 @@ def list_sales_orders():
         sort_order=sort_order,
         show_mismatches_only=show_mismatches_only,
         date_from=date_from,
-        date_to=date_to
+        date_to=date_to,
     )
 
     # Group orders by customer for bulk assignment
     orders_by_customer = {}
-    for order in result['orders']:
-        cust_id = order['customer_id']
+    for order in result["orders"]:
+        cust_id = order["customer_id"]
         if cust_id not in orders_by_customer:
             orders_by_customer[cust_id] = {
-                'customer_name': order['customer_name'],
-                'customer_salesperson_id': order['customer_salesperson_id'],
-                'customer_salesperson_name': order['customer_salesperson_name'],
-                'order_count': 0,
-                'mismatch_count': 0,
-                'order_ids': []
+                "customer_name": order["customer_name"],
+                "customer_salesperson_id": order["customer_salesperson_id"],
+                "customer_salesperson_name": order["customer_salesperson_name"],
+                "order_count": 0,
+                "mismatch_count": 0,
+                "order_ids": [],
             }
 
-        orders_by_customer[cust_id]['order_count'] += 1
-        orders_by_customer[cust_id]['order_ids'].append(order['id'])
+        orders_by_customer[cust_id]["order_count"] += 1
+        orders_by_customer[cust_id]["order_ids"].append(order["id"])
 
         # Count mismatches
-        if order['customer_salesperson_id'] and order['salesperson_id'] != order['customer_salesperson_id']:
-            orders_by_customer[cust_id]['mismatch_count'] += 1
+        if (
+            order["customer_salesperson_id"]
+            and order["salesperson_id"] != order["customer_salesperson_id"]
+        ):
+            orders_by_customer[cust_id]["mismatch_count"] += 1
 
     breadcrumbs = generate_breadcrumbs(
-        ('Home', url_for('index')),
-        ('Sales Orders', url_for('sales_orders.list_sales_orders'))
+        ("Home", url_for("index")),
+        ("Sales Orders", url_for("sales_orders.list_sales_orders")),
     )
 
-    return render_template('sales_orders.html',
-                           customers=customers,
-                           sales_orders=result['orders'],
-                           salespeople=salespeople,
-                           statuses=statuses,
-                           breadcrumbs=breadcrumbs,
-                           pagination=result['pagination'],
-                           orders_by_customer=orders_by_customer,
-                           filters={
-                               'customer_id': customer_id,
-                               'salesperson_id': salesperson_id,
-                               'status_id': status_id,
-                               'search': search,
-                               'sort_by': sort_by,
-                               'sort_order': sort_order,
-                               'per_page': per_page,
-                               'show_mismatches': show_mismatches_only,
-                               'date_from': date_from,
-                               'date_to': date_to
-                           })
+    return render_template(
+        "sales_orders.html",
+        customers=customers,
+        sales_orders=result["orders"],
+        salespeople=salespeople,
+        statuses=statuses,
+        breadcrumbs=breadcrumbs,
+        pagination=result["pagination"],
+        orders_by_customer=orders_by_customer,
+        filters={
+            "customer_id": customer_id,
+            "salesperson_id": salesperson_id,
+            "status_id": status_id,
+            "search": search,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "per_page": per_page,
+            "show_mismatches": show_mismatches_only,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
+    )
 
-@sales_orders_bp.route('/bulk_update_salesperson', methods=['POST'])
+
+@sales_orders_bp.route("/bulk_update_salesperson", methods=["POST"])
 def bulk_update_salesperson():
     """Bulk update salesperson for multiple orders"""
     data = request.get_json()
-    order_ids = data.get('order_ids', [])
-    salesperson_id = data.get('salesperson_id')
+    order_ids = data.get("order_ids", [])
+    salesperson_id = data.get("salesperson_id")
 
     if not order_ids:
-        return jsonify({'error': 'No orders specified'}), 400
+        return jsonify({"error": "No orders specified"}), 400
 
     try:
-        placeholders = ','.join(['?'] * len(order_ids))
+        placeholders = ",".join(["?"] * len(order_ids))
         query = f"""
             UPDATE sales_orders
             SET salesperson_id = ?
@@ -145,60 +209,78 @@ def bulk_update_salesperson():
         params = [salesperson_id if salesperson_id else None] + order_ids
         db_execute(query, params, commit=True)
 
-        return jsonify({'success': True, 'updated_count': len(order_ids)})
+        return jsonify({"success": True, "updated_count": len(order_ids)})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@sales_orders_bp.route('/new', methods=['GET', 'POST'])
+@sales_orders_bp.route("/new", methods=["GET", "POST"])
 def create_sales_order():
-    if request.method == 'POST':
+    if request.method == "POST":
         # Capture form data
-        customer_id = request.form['customer_id']
-        customer_po_ref = request.form['customer_po_ref']
-        salesperson_id = request.form.get('salesperson_id')
-        contact_name = request.form['contact_name']
-        incoterms = request.form['incoterms']
-        payment_terms = request.form['payment_terms']
+        customer_id = request.form["customer_id"]
+        customer_po_ref = request.form["customer_po_ref"]
+        salesperson_id = request.form.get("salesperson_id")
+        contact_name = request.form["contact_name"]
+        incoterms = request.form["incoterms"]
+        payment_terms = request.form["payment_terms"]
 
         # Insert sales order into the database
-        insert_sales_order(customer_id, customer_po_ref, salesperson_id, contact_name, incoterms, payment_terms)
+        insert_sales_order(
+            customer_id,
+            customer_po_ref,
+            salesperson_id,
+            contact_name,
+            incoterms,
+            payment_terms,
+        )
 
-        return redirect(url_for('sales_orders.list_sales_orders'))
+        return redirect(url_for("sales_orders.list_sales_orders"))
 
     # Fetch customers and salespeople for the form
     customers = get_customers()
     salespeople = get_salespeople()
 
-    breadcrumbs = generate_breadcrumbs(('Home', url_for('index')), ('Sales Orders', url_for('sales_orders.list_sales_orders')), ('New Sales Order', url_for('sales_orders.create_sales_order')))
-    return render_template('new_sales_order.html', customers=customers, salespeople=salespeople, breadcrumbs=breadcrumbs)
+    breadcrumbs = generate_breadcrumbs(
+        ("Home", url_for("index")),
+        ("Sales Orders", url_for("sales_orders.list_sales_orders")),
+        ("New Sales Order", url_for("sales_orders.create_sales_order")),
+    )
+    return render_template(
+        "new_sales_order.html",
+        customers=customers,
+        salespeople=salespeople,
+        breadcrumbs=breadcrumbs,
+    )
 
 
-@sales_orders_bp.route('/<int:sales_order_id>/edit', methods=['GET', 'POST'])
+@sales_orders_bp.route("/<int:sales_order_id>/edit", methods=["GET", "POST"])
 def edit_sales_order(sales_order_id):
-    if request.method == 'POST':
+    if request.method == "POST":
         # Update sales order details
-        customer_id = request.form['customer_id']
-        customer_po_ref = request.form['customer_po_ref']
-        sales_status_id = request.form['sales_status_id']
-        update_sales_order(sales_order_id, customer_id, customer_po_ref, sales_status_id)
+        customer_id = request.form["customer_id"]
+        customer_po_ref = request.form["customer_po_ref"]
+        sales_status_id = request.form["sales_status_id"]
+        update_sales_order(
+            sales_order_id, customer_id, customer_po_ref, sales_status_id
+        )
 
         # Update sales order lines
         sales_order_lines = get_sales_order_lines(sales_order_id)
 
         for line in sales_order_lines:
-            line_id = line['id']
-            rfq_line_id = request.form.get(f'rfq_line_{line_id}')
+            line_id = line["id"]
+            rfq_line_id = request.form.get(f"rfq_line_{line_id}")
 
             # Log the captured rfq_line_id for debugging
             print(f"Captured RFQ line for sales_order_line {line_id}: {rfq_line_id}")
 
             # Other fields
-            quantity = request.form.get(f'quantity_{line_id}')
-            price = request.form.get(f'price_{line_id}')
-            promise_date = request.form.get(f'promise_date_{line_id}')
-            ship_date = request.form.get(f'ship_date_{line_id}')
-            requested_date = request.form.get(f'requested_date_{line_id}')
+            quantity = request.form.get(f"quantity_{line_id}")
+            price = request.form.get(f"price_{line_id}")
+            promise_date = request.form.get(f"promise_date_{line_id}")
+            ship_date = request.form.get(f"ship_date_{line_id}")
+            requested_date = request.form.get(f"requested_date_{line_id}")
 
             # Ensure rfq_line_id is being passed to the update function
             update_sales_order_line(
@@ -208,10 +290,12 @@ def edit_sales_order(sales_order_id):
                 promise_date,
                 ship_date,
                 requested_date,
-                rfq_line_id  # Make sure this is passed to the update function
+                rfq_line_id,  # Make sure this is passed to the update function
             )
 
-        return redirect(url_for('sales_orders.edit_sales_order', sales_order_id=sales_order_id))
+        return redirect(
+            url_for("sales_orders.edit_sales_order", sales_order_id=sales_order_id)
+        )
 
     # Fetch sales order details and related data for the GET request
     print(f"Sales Order ID: {sales_order_id}")
@@ -233,15 +317,24 @@ def edit_sales_order(sales_order_id):
     combined_sales_order_lines = []
     for line in sales_order_lines_with_status:
         # Find matching line in the PO result set
-        matching_po_line = next((po_line for po_line in sales_order_lines_with_po if po_line['id'] == line['id']), None)
+        matching_po_line = next(
+            (
+                po_line
+                for po_line in sales_order_lines_with_po
+                if po_line["id"] == line["id"]
+            ),
+            None,
+        )
         if matching_po_line:
             # Add PO information to the status line
-            line['purchase_order_id'] = matching_po_line.get('purchase_order_id')
-            line['supplier_name'] = matching_po_line.get('supplier_name')
+            line["purchase_order_id"] = matching_po_line.get("purchase_order_id")
+            line["supplier_name"] = matching_po_line.get("supplier_name")
 
         # Fetch the RFQ lines for this base part and customer
-        rfq_options = get_rfq_lines_for_part_and_customer(line['base_part_number'], sales_order['customer_id'])
-        line['rfq_options'] = rfq_options
+        rfq_options = get_rfq_lines_for_part_and_customer(
+            line["base_part_number"], sales_order["customer_id"]
+        )
+        line["rfq_options"] = rfq_options
 
         combined_sales_order_lines.append(line)
 
@@ -254,57 +347,67 @@ def edit_sales_order(sales_order_id):
     max_line_number = get_max_line_number(sales_order_id)
 
     # Render the template and pass the combined data
-    return render_template('sales_order_edit.html',
-                           sales_order=sales_order,
-                           sales_order_lines=combined_sales_order_lines,
-                           customers=customers,
-                           statuses=statuses,
-                           max_line_number=max_line_number)
+    return render_template(
+        "sales_order_edit.html",
+        sales_order=sales_order,
+        sales_order_lines=combined_sales_order_lines,
+        customers=customers,
+        statuses=statuses,
+        max_line_number=max_line_number,
+    )
 
 
-@sales_orders_bp.route('/update_sales_order_lines/<int:sales_order_id>', methods=['POST'])
+@sales_orders_bp.route(
+    "/update_sales_order_lines/<int:sales_order_id>", methods=["POST"]
+)
 def update_sales_order_lines(sales_order_id):
     with db_cursor(commit=True) as cur:
         for key in request.form:
-            if 'rfq_line_' in key:
+            if "rfq_line_" in key:
                 rfq_line_id = request.form[key]
                 _execute_with_cursor(
                     cur,
-                    '''
+                    """
                     UPDATE sales_order_lines
                     SET rfq_line_id = ?
                     WHERE id = ?
-                    ''',
-                    (rfq_line_id, key.split('_')[-1]),
+                    """,
+                    (rfq_line_id, key.split("_")[-1]),
                 )
 
-    flash('Sales order lines updated successfully.', 'success')
-    return redirect(url_for('sales_orders.edit_sales_order', sales_order_id=sales_order_id))
+    flash("Sales order lines updated successfully.", "success")
+    return redirect(
+        url_for("sales_orders.edit_sales_order", sales_order_id=sales_order_id)
+    )
 
 
-@sales_orders_bp.route('/<int:sales_order_id>/lines/add', methods=['POST'])
+@sales_orders_bp.route("/<int:sales_order_id>/lines/add", methods=["POST"])
 def add_sales_order_line(sales_order_id):
     # Get data from the form or request
-    line_number = request.form.get('line_number')
-    part_number = request.form.get('part_number')
-    quantity = request.form.get('quantity')
-    price = request.form.get('price')
-    delivery_date = request.form.get('delivery_date')
+    line_number = request.form.get("line_number")
+    part_number = request.form.get("part_number")
+    quantity = request.form.get("quantity")
+    price = request.form.get("price")
+    delivery_date = request.form.get("delivery_date")
 
     # Insert the sales order line into the database
-    insert_sales_order_line(sales_order_id, line_number, part_number, quantity, price, delivery_date)
+    insert_sales_order_line(
+        sales_order_id, line_number, part_number, quantity, price, delivery_date
+    )
 
     # Redirect to the sales order page
-    return redirect(url_for('sales_orders.edit_sales_order', sales_order_id=sales_order_id))
+    return redirect(
+        url_for("sales_orders.edit_sales_order", sales_order_id=sales_order_id)
+    )
 
 
-@sales_orders_bp.route('/create_from_won/<int:rfq_id>', methods=['POST'])
+@sales_orders_bp.route("/create_from_won/<int:rfq_id>", methods=["POST"])
 def create_from_won(rfq_id):
     with db_cursor(commit=True) as cur:
         # Modified query to include customer payment_terms and incoterms
         won_lines = _execute_with_cursor(
             cur,
-            '''
+            """
             SELECT rl.*, pn.part_number, rf.customer_id, rf.salesperson_id,
                    c.currency_id, c.salesperson_id AS customer_salesperson_id,
                    rl.price AS sales_price,
@@ -315,36 +418,38 @@ def create_from_won(rfq_id):
             JOIN rfqs rf ON rl.rfq_id = rf.id
             JOIN customers c ON rf.customer_id = c.id
             WHERE rl.rfq_id = ? AND s.status = 'won'
-            ''',
+            """,
             (rfq_id,),
         ).fetchall()
 
     if not won_lines:
-        flash("No 'won' lines found to create a sales order.", 'error')
-        return redirect(url_for('rfqs.edit_rfq', rfq_id=rfq_id))
+        flash("No 'won' lines found to create a sales order.", "error")
+        return redirect(url_for("rfqs.edit_rfq", rfq_id=rfq_id))
 
     # Assuming all lines belong to the same customer
-    customer_id = won_lines[0]['customer_id']
+    customer_id = won_lines[0]["customer_id"]
 
     # Use RFQ salesperson_id if available, otherwise fall back to customer's salesperson_id
-    salesperson_id = won_lines[0]['salesperson_id'] or won_lines[0]['customer_salesperson_id']
+    salesperson_id = (
+        won_lines[0]["salesperson_id"] or won_lines[0]["customer_salesperson_id"]
+    )
 
     # Check if we have a valid salesperson_id
     if not salesperson_id:
-        flash("No salesperson associated with this RFQ or customer.", 'error')
-        return redirect(url_for('rfqs.edit_rfq', rfq_id=rfq_id))
+        flash("No salesperson associated with this RFQ or customer.", "error")
+        return redirect(url_for("rfqs.edit_rfq", rfq_id=rfq_id))
 
-    currency_id = won_lines[0]['currency_id']
+    currency_id = won_lines[0]["currency_id"]
 
     # Use customer's payment_terms and incoterms
-    payment_terms = won_lines[0]['payment_terms']
-    incoterms = won_lines[0]['incoterms']
+    payment_terms = won_lines[0]["payment_terms"]
+    incoterms = won_lines[0]["incoterms"]
 
     # Generate a new sales order reference
     sales_order_ref = generate_sales_order_ref()
 
     # Set the current date for date_entered
-    date_entered = datetime.now().strftime('%Y-%m-%d')
+    date_entered = datetime.now().strftime("%Y-%m-%d")
 
     # Optional fields
     customer_po_ref = "PO12345"  # Set this to a real PO if available or use None
@@ -352,7 +457,7 @@ def create_from_won(rfq_id):
 
     with db_cursor(commit=True) as cur:
         # Insert new sales order, ensuring all required fields are covered
-        insert_so_sql = '''
+        insert_so_sql = """
             INSERT INTO sales_orders (
                 customer_id,
                 sales_order_ref,
@@ -367,9 +472,9 @@ def create_from_won(rfq_id):
                 created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        '''
+        """
         if _using_postgres():
-            insert_so_sql = insert_so_sql.strip() + ' RETURNING id'
+            insert_so_sql = insert_so_sql.strip() + " RETURNING id"
 
         _execute_with_cursor(
             cur,
@@ -390,9 +495,9 @@ def create_from_won(rfq_id):
 
         so_row = cur.fetchone() if _using_postgres() else None
         sales_order_id = (
-            so_row['id']
+            so_row["id"]
             if isinstance(so_row, dict) and so_row
-            else getattr(cur, 'lastrowid', None)
+            else getattr(cur, "lastrowid", None)
         )
 
         # Initialize the line_number starting from 1
@@ -403,36 +508,38 @@ def create_from_won(rfq_id):
         for line in won_lines:
             _execute_with_cursor(
                 cur,
-                '''
+                """
                 INSERT INTO sales_order_lines (
                     sales_order_id, line_number, base_part_number, quantity, price,
                     sales_status_id, rfq_line_id, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''',
+                """,
                 (
                     sales_order_id,
                     line_number,
-                    line['base_part_number'],
-                    line['quantity'],
-                    line['sales_price'],
+                    line["base_part_number"],
+                    line["quantity"],
+                    line["sales_price"],
                     sales_status_id,
-                    line['id'],
+                    line["id"],
                 ),
             )
             line_number += 1
 
-    flash('Sales order created successfully.', 'success')
-    return redirect(url_for('sales_orders.edit_sales_order', sales_order_id=sales_order_id))
+    flash("Sales order created successfully.", "success")
+    return redirect(
+        url_for("sales_orders.edit_sales_order", sales_order_id=sales_order_id)
+    )
+
 
 def generate_sales_order_ref():
     last_order = db_execute(
-        'SELECT sales_order_ref FROM sales_orders ORDER BY id DESC LIMIT 1',
-        fetch='one'
+        "SELECT sales_order_ref FROM sales_orders ORDER BY id DESC LIMIT 1", fetch="one"
     )
 
     if last_order:
-        last_number = int(last_order['sales_order_ref'].split('-')[-1])
+        last_number = int(last_order["sales_order_ref"].split("-")[-1])
         new_order_number = last_number + 1
     else:
         new_order_number = 1
@@ -441,50 +548,62 @@ def generate_sales_order_ref():
     return f"SO{year}-{new_order_number:03d}"
 
 
-from flask import render_template, send_file
 import pdfkit  # Assuming you are using pdfkit for HTML to PDF conversion
+from flask import render_template, send_file
 
-@sales_orders_bp.route('/<int:sales_order_id>/acknowledgment', methods=['GET'])
+
+@sales_orders_bp.route("/<int:sales_order_id>/acknowledgment", methods=["GET"])
 def sales_order_acknowledgment(sales_order_id):
     # Fetch the sales order and its lines
     sales_order = get_sales_order_by_id(sales_order_id)
     sales_order_lines = get_sales_order_lines(sales_order_id)
 
     # Fetch customer addresses
-    delivery_address = CustomerAddress.query.filter_by(id=sales_order['shipping_address_id']).first()
-    invoicing_address = CustomerAddress.query.filter_by(id=sales_order['invoicing_address_id']).first()
+    delivery_address = CustomerAddress.query.filter_by(
+        id=sales_order["shipping_address_id"]
+    ).first()
+    invoicing_address = CustomerAddress.query.filter_by(
+        id=sales_order["invoicing_address_id"]
+    ).first()
 
     # Render the HTML template for the acknowledgment
-    rendered_html = render_template('acknowledgement.html',
-                                    sales_order=sales_order,
-                                    order_lines=sales_order_lines,
-                                    delivery_address=delivery_address,
-                                    invoicing_address=invoicing_address,
-                                    seller_info={
-                                        'name': 'Your Company Name',
-                                        'address': '123 Business Road',
-                                        'city': 'City',
-                                        'postal_code': 'Postal Code',
-                                        'country': 'Country',
-                                        'email': 'info@yourcompany.com',
-                                        'phone': '+44 1234 567890'
-                                    })
+    rendered_html = render_template(
+        "acknowledgement.html",
+        sales_order=sales_order,
+        order_lines=sales_order_lines,
+        delivery_address=delivery_address,
+        invoicing_address=invoicing_address,
+        seller_info={
+            "name": "Your Company Name",
+            "address": "123 Business Road",
+            "city": "City",
+            "postal_code": "Postal Code",
+            "country": "Country",
+            "email": "info@yourcompany.com",
+            "phone": "+44 1234 567890",
+        },
+    )
 
     # Convert the rendered HTML to a PDF file (using pdfkit, wkhtmltopdf, etc.)
-    pdf_file_path = f"/tmp/acknowledgment_{sales_order_id}.pdf"  # Save to a temp directory
+    pdf_file_path = (
+        f"/tmp/acknowledgment_{sales_order_id}.pdf"  # Save to a temp directory
+    )
     pdfkit.from_string(rendered_html, pdf_file_path)
 
     # Send the generated PDF file to the user
-    return send_file(pdf_file_path, as_attachment=True, download_name=f"SalesOrder_{sales_order_id}_Acknowledgment.pdf")
+    return send_file(
+        pdf_file_path,
+        as_attachment=True,
+        download_name=f"SalesOrder_{sales_order_id}_Acknowledgment.pdf",
+    )
 
 
-
-@sales_orders_bp.route('/<int:sales_order_id>/generate_acknowledgment', methods=['GET'])
+@sales_orders_bp.route("/<int:sales_order_id>/generate_acknowledgment", methods=["GET"])
 def generate_acknowledgment(sales_order_id):
     # Fetch sales order and sales order lines
     sales_order = get_sales_order_by_id(sales_order_id)
     sales_order_lines = get_sales_order_lines(sales_order_id)
-    sales_order['sales_order_lines'] = sales_order_lines
+    sales_order["sales_order_lines"] = sales_order_lines
 
     # Generate the acknowledgment PDF and save it with a version number
     pdf_file_path = generate_sales_order_acknowledgment_file(sales_order)
@@ -492,48 +611,58 @@ def generate_acknowledgment(sales_order_id):
     with db_cursor(commit=True) as cur:
         _execute_with_cursor(
             cur,
-            'INSERT INTO acknowledgments (sales_order_id, acknowledgment_pdf) VALUES (?, ?)',
+            "INSERT INTO acknowledgments (sales_order_id, acknowledgment_pdf) VALUES (?, ?)",
             (sales_order_id, pdf_file_path),
         )
         _execute_with_cursor(
             cur,
-            'UPDATE sales_orders SET sales_status_id = ? WHERE id = ?',
+            "UPDATE sales_orders SET sales_status_id = ? WHERE id = ?",
             (2, sales_order_id),
         )
         _execute_with_cursor(
             cur,
-            'UPDATE sales_order_lines SET sales_status_id = ? WHERE sales_order_id = ?',
+            "UPDATE sales_order_lines SET sales_status_id = ? WHERE sales_order_id = ?",
             (2, sales_order_id),
         )
 
     # Redirect to the view acknowledgments page after generating the PDF
-    return redirect(url_for('sales_orders.view_acknowledgments', sales_order_id=sales_order_id))
+    return redirect(
+        url_for("sales_orders.view_acknowledgments", sales_order_id=sales_order_id)
+    )
 
 
-
-@sales_orders_bp.route('/<int:sales_order_id>/acknowledgments', methods=['GET'])
+@sales_orders_bp.route("/<int:sales_order_id>/acknowledgments", methods=["GET"])
 def view_acknowledgments(sales_order_id):
-    acknowledgments = db_execute(
-        '''
+    acknowledgments = (
+        db_execute(
+            """
         SELECT id, acknowledgment_pdf, created_at
         FROM acknowledgments
         WHERE sales_order_id = ?
         ORDER BY created_at DESC
-        ''',
-        (sales_order_id,),
-        fetch='all'
-    ) or []
+        """,
+            (sales_order_id,),
+            fetch="all",
+        )
+        or []
+    )
 
     # Render the acknowledgments page, passing the sales_order_id
-    return render_template('view_acknowledgments.html', acknowledgments=acknowledgments, sales_order_id=sales_order_id)
+    return render_template(
+        "view_acknowledgments.html",
+        acknowledgments=acknowledgments,
+        sales_order_id=sales_order_id,
+    )
 
 
-@sales_orders_bp.route('/<int:sales_order_id>/generate_acknowledgment_email', methods=['GET'])
+@sales_orders_bp.route(
+    "/<int:sales_order_id>/generate_acknowledgment_email", methods=["GET"]
+)
 def generate_acknowledgment_email(sales_order_id):
     # Fetch sales order and sales order lines
     sales_order = get_sales_order_by_id(sales_order_id)
     sales_order_lines = get_sales_order_lines(sales_order_id)
-    sales_order['sales_order_lines'] = sales_order_lines
+    sales_order["sales_order_lines"] = sales_order_lines
 
     # Generate the acknowledgment PDF and save it
     pdf_file_path = generate_sales_order_acknowledgment_file(sales_order)
@@ -549,18 +678,19 @@ def generate_acknowledgment_email(sales_order_id):
     # Redirect to open the user's email client with the generated mailto link
     return redirect(mailto_link)
 
-@sales_orders_bp.route('/email_acknowledgment/<int:acknowledgment_id>', methods=['GET'])
+
+@sales_orders_bp.route("/email_acknowledgment/<int:acknowledgment_id>", methods=["GET"])
 def email_acknowledgment(acknowledgment_id):
     acknowledgment = db_execute(
-        '''
+        """
         SELECT a.acknowledgment_pdf, so.customer_id, c.name AS customer_name
         FROM acknowledgments a
         JOIN sales_orders so ON a.sales_order_id = so.id
         JOIN customers c ON so.customer_id = c.id
         WHERE a.id = ?
-        ''',
+        """,
         (acknowledgment_id,),
-        fetch='one'
+        fetch="one",
     )
 
     if acknowledgment:
@@ -579,6 +709,13 @@ def email_acknowledgment(acknowledgment_id):
 
 
 def send_email_via_outlook(to_address, subject, body, attachment_path):
+    if not _WIN32_AVAILABLE:
+        import logging
+
+        logging.warning(
+            "send_email_via_outlook: win32com is not available on this platform. Email not sent."
+        )
+        return
     # Initialize the COM library for the current thread
     pythoncom.CoInitialize()
 
@@ -591,7 +728,7 @@ def send_email_via_outlook(to_address, subject, body, attachment_path):
         return
 
     # Initialize the Outlook application
-    outlook = win32.Dispatch('outlook.application')
+    outlook = win32.Dispatch("outlook.application")
 
     # Create a new email
     mail = outlook.CreateItem(0)
@@ -612,12 +749,14 @@ def send_email_via_outlook(to_address, subject, body, attachment_path):
 
 
 # Example usage in your acknowledgment email route
-@sales_orders_bp.route('/<int:sales_order_id>/generate_acknowledgment_outlook', methods=['GET'])
+@sales_orders_bp.route(
+    "/<int:sales_order_id>/generate_acknowledgment_outlook", methods=["GET"]
+)
 def generate_acknowledgment_outlook(sales_order_id):
     # Fetch sales order and sales order lines
     sales_order = get_sales_order_by_id(sales_order_id)
     sales_order_lines = get_sales_order_lines(sales_order_id)
-    sales_order['sales_order_lines'] = sales_order_lines
+    sales_order["sales_order_lines"] = sales_order_lines
 
     # Generate the acknowledgment PDF and save it
     pdf_file_path = generate_sales_order_acknowledgment_file(sales_order)
@@ -631,20 +770,23 @@ def generate_acknowledgment_outlook(sales_order_id):
     send_email_via_outlook(recipient, subject, body, pdf_file_path)
 
     # Redirect to view acknowledgments page
-    return redirect(url_for('sales_orders.view_acknowledgments', sales_order_id=sales_order_id))
+    return redirect(
+        url_for("sales_orders.view_acknowledgments", sales_order_id=sales_order_id)
+    )
 
-@sales_orders_bp.route('/<int:line_id>/update', methods=['POST'])
+
+@sales_orders_bp.route("/<int:line_id>/update", methods=["POST"])
 def update_sales_order_line_api(line_id):
     data = request.get_json()
 
     # Extract the values from the JSON request
-    quantity = data.get('quantity')
-    price = data.get('price')
-    promise_date = data.get('promise_date')
-    ship_date = data.get('ship_date')
-    requested_date = data.get('requested_date')
-    rfq_line_id = data.get('rfq_line_id')
-    shipped = data.get('shipped')  # Add this line to get the shipped status
+    quantity = data.get("quantity")
+    price = data.get("price")
+    promise_date = data.get("promise_date")
+    ship_date = data.get("ship_date")
+    requested_date = data.get("requested_date")
+    rfq_line_id = data.get("rfq_line_id")
+    shipped = data.get("shipped")  # Add this line to get the shipped status
 
     # Call the function, passing all parameters including shipped
     update_sales_order_line(
@@ -655,29 +797,29 @@ def update_sales_order_line_api(line_id):
         ship_date,
         requested_date,
         rfq_line_id,
-        shipped  # Add the shipped parameter
+        shipped,  # Add the shipped parameter
     )
 
     return jsonify({"success": True})
 
 
-@sales_orders_bp.route('/<int:line_id>/toggle_shipped', methods=['POST'])
+@sales_orders_bp.route("/<int:line_id>/toggle_shipped", methods=["POST"])
 def toggle_line_shipped(line_id):
     data = request.get_json()
-    shipped = data.get('shipped', False)
+    shipped = data.get("shipped", False)
 
     # Update only the shipped status
     db_execute(
-        'UPDATE sales_order_lines SET shipped = ? WHERE id = ?',
+        "UPDATE sales_order_lines SET shipped = ? WHERE id = ?",
         (shipped, line_id),
         commit=True,
     )
 
     # If shipped and we have a ship date, use it, otherwise use current date
-    if shipped and not data.get('has_ship_date', False):
-        ship_date = datetime.now().strftime('%Y-%m-%d')
+    if shipped and not data.get("has_ship_date", False):
+        ship_date = datetime.now().strftime("%Y-%m-%d")
         db_execute(
-            'UPDATE sales_order_lines SET ship_date = ? WHERE id = ? AND ship_date IS NULL',
+            "UPDATE sales_order_lines SET ship_date = ? WHERE id = ? AND ship_date IS NULL",
             (ship_date, line_id),
             commit=True,
         )
@@ -686,7 +828,8 @@ def toggle_line_shipped(line_id):
 
     return jsonify({"success": True})
 
-@sales_orders_bp.route('/<int:sales_order_id>/order_health', methods=['GET'])
+
+@sales_orders_bp.route("/<int:sales_order_id>/order_health", methods=["GET"])
 def get_order_health(sales_order_id):
     # uses db_execute so we don't manage connections manually
 
@@ -694,7 +837,7 @@ def get_order_health(sales_order_id):
     acknowledged_status_id = 2
 
     # Query sales order lines and related data for health status
-    query = '''
+    query = """
         SELECT sol.line_number,
                sol.base_part_number,  -- Include the part number
                (sol.sales_status_id = ?) AS acknowledged_to_customer,  -- Compare to status 2 for acknowledgment
@@ -706,35 +849,46 @@ def get_order_health(sales_order_id):
         LEFT JOIN purchase_orders po ON pol.purchase_order_id = po.id
         LEFT JOIN sales_statuses ss ON sol.sales_status_id = ss.id
         WHERE sol.sales_order_id = ?
-    '''
+    """
 
     # Execute the query and fetch all the lines
-    rows = db_execute(query, (acknowledged_status_id, acknowledged_status_id, sales_order_id), fetch='all') or []
+    rows = (
+        db_execute(
+            query,
+            (acknowledged_status_id, acknowledged_status_id, sales_order_id),
+            fetch="all",
+        )
+        or []
+    )
     health_statuses = [dict(line) for line in rows]
 
     # Return the data as JSON
     return jsonify(health_statuses)
 
-@sales_orders_bp.route('/<int:sales_order_id>/reference', methods=['GET'])
+
+@sales_orders_bp.route("/<int:sales_order_id>/reference", methods=["GET"])
 def get_sales_order_reference(sales_order_id):
-    query = '''SELECT sales_order_ref FROM sales_orders WHERE id = ?'''
-    result = db_execute(query, (sales_order_id,), fetch='one')
+    query = """SELECT sales_order_ref FROM sales_orders WHERE id = ?"""
+    result = db_execute(query, (sales_order_id,), fetch="one")
 
     # Check if the sales order exists
     if result:
-        return result['sales_order_ref']  # Return the sales order reference as plain text
+        return result[
+            "sales_order_ref"
+        ]  # Return the sales order reference as plain text
     else:
         return "Sales order not found", 404
 
-@sales_orders_bp.route('/<int:sales_order_id>/update_lines_status', methods=['POST'])
+
+@sales_orders_bp.route("/<int:sales_order_id>/update_lines_status", methods=["POST"])
 def update_lines_status(sales_order_id):
     """Update sales order lines with shipped quantity"""
     if not request.is_json:
         return jsonify({"success": False, "message": "Expected JSON data"})
 
     data = request.json
-    mode = data.get('mode')
-    ship_date = data.get('ship_date')
+    mode = data.get("mode")
+    ship_date = data.get("ship_date")
     shipped_status_id = 3  # Status ID for "shipped"
 
     with db_cursor(commit=True) as cur:
@@ -752,23 +906,31 @@ def update_lines_status(sales_order_id):
             lines_data = cur.fetchall() or []
 
             lines_dict = {
-                (row['id'] if isinstance(row, dict) else row[0]): {
-                    'line_number': row['line_number'] if isinstance(row, dict) else row[1],
-                    'quantity': row['quantity'] if isinstance(row, dict) else row[2],
-                    'price': row['price'] if isinstance(row, dict) else row[3],
-                    'promise_date': row['promise_date'] if isinstance(row, dict) else row[4],
-                    'requested_date': row['requested_date'] if isinstance(row, dict) else row[5],
-                    'rfq_line_id': row['rfq_line_id'] if isinstance(row, dict) else row[6],
+                (row["id"] if isinstance(row, dict) else row[0]): {
+                    "line_number": row["line_number"]
+                    if isinstance(row, dict)
+                    else row[1],
+                    "quantity": row["quantity"] if isinstance(row, dict) else row[2],
+                    "price": row["price"] if isinstance(row, dict) else row[3],
+                    "promise_date": row["promise_date"]
+                    if isinstance(row, dict)
+                    else row[4],
+                    "requested_date": row["requested_date"]
+                    if isinstance(row, dict)
+                    else row[5],
+                    "rfq_line_id": row["rfq_line_id"]
+                    if isinstance(row, dict)
+                    else row[6],
                 }
                 for row in lines_data
             }
 
             updated_count = 0
 
-            if mode == 'all':
+            if mode == "all":
                 target_line_ids = list(lines_dict.keys())
-            elif mode == 'selected':
-                target_line_ids = [int(x) for x in (data.get('line_ids', []) or [])]
+            elif mode == "selected":
+                target_line_ids = [int(x) for x in (data.get("line_ids", []) or [])]
                 if not target_line_ids:
                     return jsonify({"success": False, "message": "No lines selected"})
             else:
@@ -790,12 +952,12 @@ def update_lines_status(sales_order_id):
                     (
                         shipped_status_id,
                         ship_date,
-                        line_data['line_number'],
-                        line_data['quantity'],
-                        line_data['price'],
-                        line_data['promise_date'],
-                        line_data['requested_date'],
-                        line_data['rfq_line_id'],
+                        line_data["line_number"],
+                        line_data["quantity"],
+                        line_data["price"],
+                        line_data["promise_date"],
+                        line_data["requested_date"],
+                        line_data["rfq_line_id"],
                         line_id,
                     ),
                 )
@@ -803,7 +965,7 @@ def update_lines_status(sales_order_id):
 
             message = (
                 f"Updated {updated_count} lines with shipped quantities."
-                if mode == 'all'
+                if mode == "all"
                 else f"Updated {updated_count} selected lines with shipped quantities."
             )
 
@@ -818,7 +980,8 @@ def update_lines_status(sales_order_id):
             )
             row = cur.fetchone()
             non_shipped_count = (
-                row.get('non_shipped_count') if isinstance(row, dict)
+                row.get("non_shipped_count")
+                if isinstance(row, dict)
                 else (row[0] if row else 0)
             )
 
@@ -828,17 +991,23 @@ def update_lines_status(sales_order_id):
                     "UPDATE sales_orders SET sales_status_id = ? WHERE id = ?",
                     (shipped_status_id, sales_order_id),
                 )
-                message += " All lines fully shipped - updated sales order status to shipped."
+                message += (
+                    " All lines fully shipped - updated sales order status to shipped."
+                )
 
-            return jsonify({"success": True, "message": message, "updated_count": updated_count})
+            return jsonify(
+                {"success": True, "message": message, "updated_count": updated_count}
+            )
 
         except Exception as e:
             print(f"Error in update_lines_status: {str(e)}")
             return jsonify({"success": False, "message": str(e)})
 
+
 # NOTE: helper functions below were previously annotated "Add this helper function to models.py".
 # They remain here for backward compatibility, but now use the shared db helpers so they're
 # Postgres/SQLite dual-mode.
+
 
 def validate_line_ids_for_sales_order(line_ids, sales_order_id):
     """Validate that all line IDs belong to the specified sales order"""
@@ -846,7 +1015,7 @@ def validate_line_ids_for_sales_order(line_ids, sales_order_id):
         return True
 
     try:
-        placeholders = ','.join(['?'] * len(line_ids))
+        placeholders = ",".join(["?"] * len(line_ids))
         row = db_execute(
             f"""
             SELECT COUNT(*) AS valid_count
@@ -854,9 +1023,13 @@ def validate_line_ids_for_sales_order(line_ids, sales_order_id):
             WHERE id IN ({placeholders}) AND sales_order_id = ?
             """,
             tuple(line_ids) + (sales_order_id,),
-            fetch='one',
+            fetch="one",
         )
-        valid_count = row.get('valid_count', 0) if isinstance(row, dict) else (row[0] if row else 0)
+        valid_count = (
+            row.get("valid_count", 0)
+            if isinstance(row, dict)
+            else (row[0] if row else 0)
+        )
         return valid_count == len(line_ids)
     except Exception as e:
         print(f"Error validating line IDs: {e}")
@@ -873,23 +1046,27 @@ def count_non_shipped_lines(sales_order_id):
             WHERE sales_order_id = ? AND sales_status_id != 3
             """,
             (sales_order_id,),
-            fetch='one',
+            fetch="one",
         )
-        return row.get('non_shipped_count', 0) if isinstance(row, dict) else (row[0] if row else 0)
+        return (
+            row.get("non_shipped_count", 0)
+            if isinstance(row, dict)
+            else (row[0] if row else 0)
+        )
     except Exception as e:
         print(f"Error counting non-shipped lines: {e}")
         return -1
 
 
-@sales_orders_bp.route('/calendar', methods=['GET'])
+@sales_orders_bp.route("/calendar", methods=["GET"])
 def calendar_view():
     # Get query parameters for filtering
-    month = request.args.get('month', type=int)
-    year = request.args.get('year', type=int)
-    customer_id = request.args.get('customer_id')
-    date_type = request.args.get('date_type', 'ship_date')
-    show_stock_alerts = request.args.get('show_stock_alerts', 'true') == 'true'
-    show_pending_only = request.args.get('show_pending_only', 'false') == 'true'
+    month = request.args.get("month", type=int)
+    year = request.args.get("year", type=int)
+    customer_id = request.args.get("customer_id")
+    date_type = request.args.get("date_type", "ship_date")
+    show_stock_alerts = request.args.get("show_stock_alerts", "true") == "true"
+    show_pending_only = request.args.get("show_pending_only", "false") == "true"
 
     # If month/year not provided, use current month/year
     today = datetime.now()
@@ -931,8 +1108,11 @@ def calendar_view():
             # Fill in leading/trailing days from previous/next month
             if week == 0 and weekday < first_weekday:
                 # Calculate the day from previous month
-                prev_month_last_day = (datetime(prev_month.year, prev_month.month + 1, 1) if prev_month.month < 12
-                                       else datetime(prev_month.year + 1, 1, 1)) - timedelta(days=1)
+                prev_month_last_day = (
+                    datetime(prev_month.year, prev_month.month + 1, 1)
+                    if prev_month.month < 12
+                    else datetime(prev_month.year + 1, 1, 1)
+                ) - timedelta(days=1)
                 prev_day = prev_month_last_day.day - (first_weekday - weekday - 1)
                 date_obj = datetime(prev_month.year, prev_month.month, prev_day)
                 week_data.append({"date": date_obj, "orders": []})
@@ -969,7 +1149,9 @@ def calendar_view():
             try:
                 order.stock_status = check_order_stock_availability(db, order)
             except Exception as e:
-                print(f"Error checking stock for order {getattr(order, 'id', 'unknown')}: {e}")
+                print(
+                    f"Error checking stock for order {getattr(order, 'id', 'unknown')}: {e}"
+                )
                 # Set a default error status
                 order.stock_status = {
                     "at_risk": False,
@@ -978,7 +1160,7 @@ def calendar_view():
                     "shortage": 0,
                     "next_delivery_date": None,
                     "next_delivery_quantity": 0,
-                    "details": "Error checking stock"
+                    "details": "Error checking stock",
                 }
 
     # Filter orders based on pending shipments if requested
@@ -988,10 +1170,12 @@ def calendar_view():
         for order in orders:
             try:
                 # Use the correct ID field - use sales_order_id if it exists, otherwise use id
-                order_id = getattr(order, 'sales_order_id', getattr(order, 'id', None))
+                order_id = getattr(order, "sales_order_id", getattr(order, "id", None))
 
                 if order_id:
-                    non_shipped_count = count_non_fully_shipped_lines_with_db(db, order_id)
+                    non_shipped_count = count_non_fully_shipped_lines_with_db(
+                        db, order_id
+                    )
                     order.non_shipped_lines_count = non_shipped_count
                     order.has_pending_shipments = order.non_shipped_lines_count > 0
 
@@ -1016,7 +1200,7 @@ def calendar_view():
     orders_by_ref = {}
     for order in orders:
         # Make sure each order has a sales_order_ref attribute
-        if not hasattr(order, 'sales_order_ref') or not order.sales_order_ref:
+        if not hasattr(order, "sales_order_ref") or not order.sales_order_ref:
             # If no sales_order_ref, use the ID as a fallback
             order_ref = f"SO-{getattr(order, 'sales_order_id', getattr(order, 'id', 'unknown'))}"
             order.sales_order_ref = order_ref
@@ -1030,7 +1214,7 @@ def calendar_view():
         # Convert string date to datetime object if it's a string
         if isinstance(order_date, str):
             try:
-                order_date = datetime.strptime(order_date, '%Y-%m-%d')
+                order_date = datetime.strptime(order_date, "%Y-%m-%d")
             except ValueError:
                 # If parsing fails, skip this order
                 continue
@@ -1045,16 +1229,21 @@ def calendar_view():
     # Sort orders within each day by customer name and sales order reference
     for week in calendar_data:
         for day in week:
-            day["orders"].sort(key=lambda o: (getattr(o, 'customer_name', ''), getattr(o, 'sales_order_ref', '')))
+            day["orders"].sort(
+                key=lambda o: (
+                    getattr(o, "customer_name", ""),
+                    getattr(o, "sales_order_ref", ""),
+                )
+            )
 
     # Get customers for filter dropdown
     customers = get_customers()
 
     # Generate breadcrumbs for this page
     breadcrumbs = generate_breadcrumbs(
-        ('Home', url_for('index')),
-        ('Sales Orders', url_for('sales_orders.list_sales_orders')),
-        ('Calendar View', url_for('sales_orders.calendar_view'))
+        ("Home", url_for("index")),
+        ("Sales Orders", url_for("sales_orders.list_sales_orders")),
+        ("Calendar View", url_for("sales_orders.calendar_view")),
     )
 
     if db is not None:
@@ -1062,11 +1251,11 @@ def calendar_view():
 
     # Return the template with calendar data
     return render_template(
-        'sales_orders_calendar.html',
+        "sales_orders_calendar.html",
         calendar_data=calendar_data,
         month=month,
         year=year,
-        month_name=first_day.strftime('%B'),
+        month_name=first_day.strftime("%B"),
         prev_month=prev_month,
         next_month=next_month,
         today=today.date(),
@@ -1075,7 +1264,7 @@ def calendar_view():
         date_type=date_type,
         breadcrumbs=breadcrumbs,
         show_stock_alerts=show_stock_alerts,
-        show_pending_only=show_pending_only
+        show_pending_only=show_pending_only,
     )
 
 
@@ -1084,7 +1273,7 @@ def count_non_fully_shipped_lines_with_db(db, sales_order_id):
     try:
         cursor = db.cursor()
         query = """
-            SELECT COUNT(*) FROM sales_order_lines 
+            SELECT COUNT(*) FROM sales_order_lines
             WHERE sales_order_id = ? AND (quantity > shipped_quantity OR shipped_quantity IS NULL)
         """
         print(f"DEBUG: Executing query: {query} with sales_order_id={sales_order_id}")
@@ -1100,29 +1289,40 @@ def count_non_fully_shipped_lines_with_db(db, sales_order_id):
 
         return -1  # Return -1 to indicate an error
 
-@sales_orders_bp.route('/<int:line_id>/update_shipped_quantity', methods=['POST'])
+
+@sales_orders_bp.route("/<int:line_id>/update_shipped_quantity", methods=["POST"])
 def update_shipped_quantity(line_id):
     data = request.get_json()
-    shipped_quantity = data.get('shipped_quantity', 0)
+    shipped_quantity = data.get("shipped_quantity", 0)
 
-    line = db_execute('SELECT quantity FROM sales_order_lines WHERE id = ?', (line_id,), fetch='one')
+    line = db_execute(
+        "SELECT quantity FROM sales_order_lines WHERE id = ?", (line_id,), fetch="one"
+    )
 
     if not line:
         return jsonify({"success": False, "message": "Line not found"})
 
     # Validate shipped quantity
-    total_quantity = line['quantity']
+    total_quantity = line["quantity"]
     if shipped_quantity > total_quantity:
         return jsonify(
-            {"success": False, "message": f"Shipped quantity cannot exceed total quantity ({total_quantity})"})
+            {
+                "success": False,
+                "message": f"Shipped quantity cannot exceed total quantity ({total_quantity})",
+            }
+        )
 
-    db_execute('UPDATE sales_order_lines SET shipped_quantity = ? WHERE id = ?', (shipped_quantity, line_id), commit=True)
+    db_execute(
+        "UPDATE sales_order_lines SET shipped_quantity = ? WHERE id = ?",
+        (shipped_quantity, line_id),
+        commit=True,
+    )
 
     # If we're marking shipped and ship_date is empty, set it to today
-    if shipped_quantity > 0 and data.get('update_ship_date', False):
-        today = datetime.now().strftime('%Y-%m-%d')
+    if shipped_quantity > 0 and data.get("update_ship_date", False):
+        today = datetime.now().strftime("%Y-%m-%d")
         db_execute(
-            'UPDATE sales_order_lines SET ship_date = ? WHERE id = ? AND ship_date IS NULL',
+            "UPDATE sales_order_lines SET ship_date = ? WHERE id = ? AND ship_date IS NULL",
             (today, line_id),
             commit=True,
         )
@@ -1130,7 +1330,7 @@ def update_shipped_quantity(line_id):
     return jsonify({"success": True})
 
 
-@sales_orders_bp.route('/calculate_ship_dates', methods=['POST'])
+@sales_orders_bp.route("/calculate_ship_dates", methods=["POST"])
 def calculate_ship_dates():
     try:
         # Get parameters from the request with fallback to query parameters
@@ -1141,7 +1341,9 @@ def calculate_ship_dates():
             request_data = {}
 
         # Allow parameters to be passed in query string as well
-        debug_mode = request_data.get('debug', request.args.get('debug', 'false').lower() == 'true')
+        debug_mode = request_data.get(
+            "debug", request.args.get("debug", "false").lower() == "true"
+        )
 
         # Always avoid weekends
         avoid_weekends = True
@@ -1149,9 +1351,7 @@ def calculate_ship_dates():
         # Add debug mode parameter
         debug_info = {}
         result = calculate_ship_dates_for_open_orders(
-            debug=debug_mode,
-            debug_info=debug_info,
-            avoid_weekends=avoid_weekends
+            debug=debug_mode, debug_info=debug_info, avoid_weekends=avoid_weekends
         )
 
         # Include debug info in response if no orders were updated or in debug mode
@@ -1161,12 +1361,11 @@ def calculate_ship_dates():
         return jsonify(result)
     except Exception as e:
         import traceback
+
         error_details = traceback.format_exc()
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "details": error_details
-        }), 500
+        return jsonify(
+            {"status": "error", "message": str(e), "details": error_details}
+        ), 500
 
 
 def count_non_fully_shipped_lines(sales_order_id):
@@ -1179,29 +1378,29 @@ def count_non_fully_shipped_lines(sales_order_id):
             WHERE sales_order_id = ? AND (quantity > shipped_quantity OR shipped_quantity IS NULL)
             """,
             (sales_order_id,),
-            fetch='one',
+            fetch="one",
         )
         if not row:
             return 0
-        return row.get('non_shipped_count', 0) if isinstance(row, dict) else row[0]
+        return row.get("non_shipped_count", 0) if isinstance(row, dict) else row[0]
     except Exception as e:
         print(f"Error counting non-fully shipped lines: {e}")
         return -1
 
 
-@sales_orders_bp.route('/<int:sales_order_id>/update_salesperson', methods=['POST'])
+@sales_orders_bp.route("/<int:sales_order_id>/update_salesperson", methods=["POST"])
 def update_salesperson(sales_order_id):
     """Update the salesperson for a sales order."""
     try:
         data = request.get_json()
-        salesperson_id = data.get('salesperson_id')
+        salesperson_id = data.get("salesperson_id")
 
         db_execute(
-            'UPDATE sales_orders SET salesperson_id = ? WHERE id = ?',
+            "UPDATE sales_orders SET salesperson_id = ? WHERE id = ?",
             (salesperson_id, sales_order_id),
             commit=True,
         )
 
-        return jsonify({'success': True}), 200
+        return jsonify({"success": True}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500

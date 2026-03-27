@@ -1,18 +1,22 @@
-from flask import Blueprint, request, jsonify, render_template, redirect, url_for
-import pandas as pd
 import os
 import re
 from datetime import datetime
+
+import pandas as pd
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
-import numpy as np
 
-from db import db_cursor, execute as db_execute, get_db_connection
+from db import db_cursor, get_db_connection
+from db import execute as db_execute
 
-stock_movements_bp = Blueprint('stock_movements', __name__, url_prefix='/stock')
+stock_movements_bp = Blueprint("stock_movements", __name__, url_prefix="/stock")
 
 
 def _using_postgres() -> bool:
-    return bool(os.getenv('DATABASE_URL') and os.getenv('DATABASE_URL').startswith(('postgres://', 'postgresql://')))
+    return bool(
+        os.getenv("DATABASE_URL")
+        and os.getenv("DATABASE_URL").startswith(("postgres://", "postgresql://"))
+    )
 
 
 def _prepare_query(query: str) -> str:
@@ -21,7 +25,7 @@ def _prepare_query(query: str) -> str:
     db_execute/db_cursor translate '?' to '%s' in Postgres mode. We replicate that here
     for direct cursor.execute calls.
     """
-    return query.replace('?', '%s') if _using_postgres() else query
+    return query.replace("?", "%s") if _using_postgres() else query
 
 
 def _execute_with_cursor(cur, query: str, params=None):
@@ -31,20 +35,20 @@ def _execute_with_cursor(cur, query: str, params=None):
 
 def _get_inserted_id(row, cur) -> int | None:
     if row is None:
-        return getattr(cur, 'lastrowid', None)
+        return getattr(cur, "lastrowid", None)
     if isinstance(row, dict):
-        return row.get('id')
+        return row.get("id")
     try:
-        return row['id']
+        return row["id"]
     except Exception:
         try:
             return row[0]
         except Exception:
-            return getattr(cur, 'lastrowid', None)
+            return getattr(cur, "lastrowid", None)
 
 
 def update_part_stock(base_part_number, quantity, movement_type):
-    operator = '+' if movement_type == 'IN' else '-'
+    operator = "+" if movement_type == "IN" else "-"
     query = f"""
         UPDATE part_numbers
         SET stock = COALESCE(stock, 0) {operator} ?
@@ -53,27 +57,33 @@ def update_part_stock(base_part_number, quantity, movement_type):
     db_execute(query, (quantity, base_part_number), commit=True)
 
 
-@stock_movements_bp.route('/', methods=['GET'])
+@stock_movements_bp.route("/", methods=["GET"])
 def stock_movements_page():
     try:
-        parts_rows = db_execute(
-            """
+        parts_rows = (
+            db_execute(
+                """
             SELECT base_part_number, part_number
             FROM part_numbers
             ORDER BY base_part_number
             """,
-            fetch='all'
-        ) or []
+                fetch="all",
+            )
+            or []
+        )
         parts = [
             {
-                'base_part_number': r['base_part_number'] if isinstance(r, dict) else r[0],
-                'part_number': r['part_number'] if isinstance(r, dict) else r[1],
+                "base_part_number": r["base_part_number"]
+                if isinstance(r, dict)
+                else r[0],
+                "part_number": r["part_number"] if isinstance(r, dict) else r[1],
             }
             for r in parts_rows
         ]
 
-        recent_rows = db_execute(
-            """
+        recent_rows = (
+            db_execute(
+                """
             SELECT sm.movement_id, sm.base_part_number, pn.part_number,
                    sm.movement_type, sm.quantity, sm.datecode,
                    sm.cost_per_unit, sm.movement_date
@@ -82,43 +92,49 @@ def stock_movements_page():
             ORDER BY sm.movement_date DESC
             LIMIT 10
             """,
-            fetch='all'
-        ) or []
+                fetch="all",
+            )
+            or []
+        )
 
         recent_movements = [
             {
-                'id': r['movement_id'] if isinstance(r, dict) else r[0],
-                'base_part_number': r['base_part_number'] if isinstance(r, dict) else r[1],
-                'part_number': r['part_number'] if isinstance(r, dict) else r[2],
-                'type': r['movement_type'] if isinstance(r, dict) else r[3],
-                'quantity': r['quantity'] if isinstance(r, dict) else r[4],
-                'datecode': r['datecode'] if isinstance(r, dict) else r[5],
-                'cost_per_unit': r['cost_per_unit'] if isinstance(r, dict) else r[6],
-                'date': r['movement_date'] if isinstance(r, dict) else r[7],
+                "id": r["movement_id"] if isinstance(r, dict) else r[0],
+                "base_part_number": r["base_part_number"]
+                if isinstance(r, dict)
+                else r[1],
+                "part_number": r["part_number"] if isinstance(r, dict) else r[2],
+                "type": r["movement_type"] if isinstance(r, dict) else r[3],
+                "quantity": r["quantity"] if isinstance(r, dict) else r[4],
+                "datecode": r["datecode"] if isinstance(r, dict) else r[5],
+                "cost_per_unit": r["cost_per_unit"] if isinstance(r, dict) else r[6],
+                "date": r["movement_date"] if isinstance(r, dict) else r[7],
             }
             for r in recent_rows
         ]
 
-        return render_template('stock_movements.html', parts=parts, recent_movements=recent_movements)
+        return render_template(
+            "stock_movements.html", parts=parts, recent_movements=recent_movements
+        )
 
     except Exception as e:
         return f"Database error: {str(e)}"
 
 
-@stock_movements_bp.route('/add', methods=['POST'])
+@stock_movements_bp.route("/add", methods=["POST"])
 def add_stock():
     data = request.get_json()
 
-    base_part_number = data.get('base_part_number')
-    quantity = data.get('quantity')
+    base_part_number = data.get("base_part_number")
+    quantity = data.get("quantity")
 
-    datecode = data.get('datecode', '')
-    cost_per_unit = data.get('cost_per_unit')
-    reference = data.get('reference', '')
-    notes = data.get('notes', '')
+    datecode = data.get("datecode", "")
+    cost_per_unit = data.get("cost_per_unit")
+    reference = data.get("reference", "")
+    notes = data.get("notes", "")
 
     if not base_part_number or not quantity:
-        return jsonify({'error': 'Missing required fields'}), 400
+        return jsonify({"error": "Missing required fields"}), 400
 
     try:
         with db_cursor(commit=True) as cur:
@@ -130,30 +146,44 @@ def add_stock():
                  cost_per_unit, reference, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (base_part_number, 'IN', quantity, quantity, datecode, cost_per_unit, reference, notes),
+                (
+                    base_part_number,
+                    "IN",
+                    quantity,
+                    quantity,
+                    datecode,
+                    cost_per_unit,
+                    reference,
+                    notes,
+                ),
             )
 
-        update_part_stock(base_part_number, quantity, 'IN')
-        return jsonify({'success': True, 'message': f'Added {quantity} units to {base_part_number}'}), 201
+        update_part_stock(base_part_number, quantity, "IN")
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Added {quantity} units to {base_part_number}",
+            }
+        ), 201
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@stock_movements_bp.route('/remove', methods=['POST'])
+@stock_movements_bp.route("/remove", methods=["POST"])
 def remove_stock():
     data = request.get_json()
 
     # Required fields
-    base_part_number = data.get('base_part_number')
-    quantity = data.get('quantity')
+    base_part_number = data.get("base_part_number")
+    quantity = data.get("quantity")
 
     # Optional fields
-    reference = data.get('reference', '')
-    notes = data.get('notes', '')
+    reference = data.get("reference", "")
+    notes = data.get("notes", "")
 
     if not base_part_number or not quantity:
-        return jsonify({'error': 'Missing required fields'}), 400
+        return jsonify({"error": "Missing required fields"}), 400
 
     try:
         with db_cursor(commit=True) as cur:
@@ -164,10 +194,12 @@ def remove_stock():
                 (base_part_number,),
             )
             stock_row = cur.fetchone()
-            current_stock = stock_row['stock'] if isinstance(stock_row, dict) else stock_row[0]
+            current_stock = (
+                stock_row["stock"] if isinstance(stock_row, dict) else stock_row[0]
+            )
 
             if current_stock is None or current_stock < quantity:
-                return jsonify({'error': 'Insufficient stock'}), 400
+                return jsonify({"error": "Insufficient stock"}), 400
 
             # Find available stock using FIFO
             _execute_with_cursor(
@@ -186,8 +218,16 @@ def remove_stock():
             allocations = []
 
             for movement in available_stock:
-                movement_id = movement['movement_id'] if isinstance(movement, dict) else movement[0]
-                available = movement['available_quantity'] if isinstance(movement, dict) else movement[1]
+                movement_id = (
+                    movement["movement_id"]
+                    if isinstance(movement, dict)
+                    else movement[0]
+                )
+                available = (
+                    movement["available_quantity"]
+                    if isinstance(movement, dict)
+                    else movement[1]
+                )
 
                 if remaining_quantity <= 0:
                     break
@@ -204,7 +244,7 @@ def remove_stock():
                 remaining_quantity -= allocated
 
             if remaining_quantity > 0:
-                return jsonify({'error': 'Insufficient stock available'}), 400
+                return jsonify({"error": "Insufficient stock available"}), 400
 
             for movement_id, allocated in allocations:
                 _execute_with_cursor(
@@ -214,21 +254,27 @@ def remove_stock():
                     (base_part_number, movement_type, quantity, parent_movement_id, reference, notes)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (base_part_number, 'OUT', allocated, movement_id, reference, notes),
+                    (base_part_number, "OUT", allocated, movement_id, reference, notes),
                 )
 
-        update_part_stock(base_part_number, quantity, 'OUT')
-        return jsonify({'success': True, 'message': f'Removed {quantity} units from {base_part_number}'}), 200
+        update_part_stock(base_part_number, quantity, "OUT")
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Removed {quantity} units from {base_part_number}",
+            }
+        ), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@stock_movements_bp.route('/inventory', methods=['GET'])
+@stock_movements_bp.route("/inventory", methods=["GET"])
 def get_inventory():
     try:
-        rows = db_execute(
-            """
+        rows = (
+            db_execute(
+                """
             SELECT pn.base_part_number, pn.part_number, pn.stock, pn.datecode,
                    (SELECT COALESCE(AVG(cost_per_unit), 0)
                     FROM stock_movements sm
@@ -238,16 +284,22 @@ def get_inventory():
             WHERE pn.stock > 0
             ORDER BY pn.base_part_number
             """,
-            fetch='all'
-        ) or []
+                fetch="all",
+            )
+            or []
+        )
 
         inventory = [
             {
-                'base_part_number': r['base_part_number'] if isinstance(r, dict) else r[0],
-                'part_number': r['part_number'] if isinstance(r, dict) else r[1],
-                'stock': r['stock'] if isinstance(r, dict) else r[2],
-                'datecode': r['datecode'] if isinstance(r, dict) else r[3],
-                'avg_cost': round((r['avg_cost'] if isinstance(r, dict) else r[4]) or 0, 2),
+                "base_part_number": r["base_part_number"]
+                if isinstance(r, dict)
+                else r[0],
+                "part_number": r["part_number"] if isinstance(r, dict) else r[1],
+                "stock": r["stock"] if isinstance(r, dict) else r[2],
+                "datecode": r["datecode"] if isinstance(r, dict) else r[3],
+                "avg_cost": round(
+                    (r["avg_cost"] if isinstance(r, dict) else r[4]) or 0, 2
+                ),
             }
             for r in rows
         ]
@@ -255,14 +307,15 @@ def get_inventory():
         return jsonify(inventory), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@stock_movements_bp.route('/balances/<string:base_part_number>', methods=['GET'])
+@stock_movements_bp.route("/balances/<string:base_part_number>", methods=["GET"])
 def get_stock_balances(base_part_number, jsonify=jsonify):
     try:
-        rows = db_execute(
-            """
+        rows = (
+            db_execute(
+                """
             SELECT
                 sm.movement_id,
                 sm.base_part_number,
@@ -280,21 +333,27 @@ def get_stock_balances(base_part_number, jsonify=jsonify):
               AND sm.available_quantity > 0
             ORDER BY sm.movement_date
             """,
-            (base_part_number,),
-            fetch='all'
-        ) or []
+                (base_part_number,),
+                fetch="all",
+            )
+            or []
+        )
 
         balances = [
             {
-                'movement_id': r['movement_id'] if isinstance(r, dict) else r[0],
-                'base_part_number': r['base_part_number'] if isinstance(r, dict) else r[1],
-                'part_number': r['part_number'] if isinstance(r, dict) else r[2],
-                'datecode': r['datecode'] if isinstance(r, dict) else r[3],
-                'receipt_date': r['movement_date'] if isinstance(r, dict) else r[4],
-                'cost_per_unit': r['cost_per_unit'] if isinstance(r, dict) else r[5],
-                'original_quantity': r['quantity'] if isinstance(r, dict) else r[6],
-                'available_quantity': r['available_quantity'] if isinstance(r, dict) else r[7],
-                'reference': r['reference'] if isinstance(r, dict) else r[8],
+                "movement_id": r["movement_id"] if isinstance(r, dict) else r[0],
+                "base_part_number": r["base_part_number"]
+                if isinstance(r, dict)
+                else r[1],
+                "part_number": r["part_number"] if isinstance(r, dict) else r[2],
+                "datecode": r["datecode"] if isinstance(r, dict) else r[3],
+                "receipt_date": r["movement_date"] if isinstance(r, dict) else r[4],
+                "cost_per_unit": r["cost_per_unit"] if isinstance(r, dict) else r[5],
+                "original_quantity": r["quantity"] if isinstance(r, dict) else r[6],
+                "available_quantity": r["available_quantity"]
+                if isinstance(r, dict)
+                else r[7],
+                "reference": r["reference"] if isinstance(r, dict) else r[8],
             }
             for r in rows
         ]
@@ -302,21 +361,21 @@ def get_stock_balances(base_part_number, jsonify=jsonify):
         return jsonify(balances), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@stock_movements_bp.route('/remove-specific', methods=['POST'])
+@stock_movements_bp.route("/remove-specific", methods=["POST"])
 def remove_specific_stock():
     data = request.get_json()
 
-    movement_id = data.get('movement_id')
-    quantity = data.get('quantity')
+    movement_id = data.get("movement_id")
+    quantity = data.get("quantity")
 
-    reference = data.get('reference', '')
-    notes = data.get('notes', '')
+    reference = data.get("reference", "")
+    notes = data.get("notes", "")
 
     if not movement_id or not quantity:
-        return jsonify({'error': 'Missing required fields'}), 400
+        return jsonify({"error": "Missing required fields"}), 400
 
     try:
         with db_cursor(commit=True) as cur:
@@ -331,13 +390,25 @@ def remove_specific_stock():
             )
             movement = cur.fetchone()
             if not movement:
-                return jsonify({'error': 'Invalid movement ID'}), 400
+                return jsonify({"error": "Invalid movement ID"}), 400
 
-            base_part_number = movement['base_part_number'] if isinstance(movement, dict) else movement[1]
-            available = movement['available_quantity'] if isinstance(movement, dict) else movement[2]
+            base_part_number = (
+                movement["base_part_number"]
+                if isinstance(movement, dict)
+                else movement[1]
+            )
+            available = (
+                movement["available_quantity"]
+                if isinstance(movement, dict)
+                else movement[2]
+            )
 
             if quantity > available:
-                return jsonify({'error': f'Insufficient stock available (only {available} units left)'}), 400
+                return jsonify(
+                    {
+                        "error": f"Insufficient stock available (only {available} units left)"
+                    }
+                ), 400
 
             _execute_with_cursor(
                 cur,
@@ -352,20 +423,25 @@ def remove_specific_stock():
                 (base_part_number, movement_type, quantity, parent_movement_id, reference, notes)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (base_part_number, 'OUT', quantity, movement_id, reference, notes),
+                (base_part_number, "OUT", quantity, movement_id, reference, notes),
             )
 
-        update_part_stock(base_part_number, quantity, 'OUT')
-        return jsonify({'success': True, 'message': f'Removed {quantity} units from specific batch'}), 200
+        update_part_stock(base_part_number, quantity, "OUT")
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Removed {quantity} units from specific batch",
+            }
+        ), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 # New functionality for stock movement imports
 def create_base_part_number(part_number):
     """Create a normalized base part number by stripping non-alphanumeric chars."""
-    return re.sub(r'[^a-zA-Z0-9]', '', str(part_number or '')).upper()
+    return re.sub(r"[^a-zA-Z0-9]", "", str(part_number or "")).upper()
 
 
 def create_part_on_demand(cur, system_part_number, part_number=None):
@@ -388,13 +464,17 @@ def create_part_on_demand(cur, system_part_number, part_number=None):
         return base_part_number
     except Exception as e:
         # Check if it's a base_part_number collision
-        if 'base_part_number' in str(e) or 'UNIQUE' in str(e).upper() or 'duplicate' in str(e).lower():
+        if (
+            "base_part_number" in str(e)
+            or "UNIQUE" in str(e).upper()
+            or "duplicate" in str(e).lower()
+        ):
             # Part exists with same base but different system number - update it
             _execute_with_cursor(
                 cur,
                 """
-                SELECT base_part_number, system_part_number, part_number 
-                FROM part_numbers 
+                SELECT base_part_number, system_part_number, part_number
+                FROM part_numbers
                 WHERE base_part_number = ?
                 """,
                 (base_part_number,),
@@ -402,15 +482,23 @@ def create_part_on_demand(cur, system_part_number, part_number=None):
             existing = cur.fetchone()
 
             if existing:
-                existing_bpn = existing['base_part_number'] if isinstance(existing, dict) else existing[0]
-                print(f"Part with base {base_part_number} exists with system_part_number='{existing_bpn}'")
-                print(f"Updating to use system_part_number='{system_part_number}' instead")
+                existing_bpn = (
+                    existing["base_part_number"]
+                    if isinstance(existing, dict)
+                    else existing[0]
+                )
+                print(
+                    f"Part with base {base_part_number} exists with system_part_number='{existing_bpn}'"
+                )
+                print(
+                    f"Updating to use system_part_number='{system_part_number}' instead"
+                )
 
                 # Update to the new system_part_number
                 _execute_with_cursor(
                     cur,
                     """
-                    UPDATE part_numbers 
+                    UPDATE part_numbers
                     SET system_part_number = ?,
                         part_number = ?
                     WHERE base_part_number = ?
@@ -424,7 +512,7 @@ def create_part_on_demand(cur, system_part_number, part_number=None):
         _execute_with_cursor(
             cur,
             """
-            SELECT base_part_number FROM part_numbers 
+            SELECT base_part_number FROM part_numbers
             WHERE system_part_number = ?
             """,
             (system_part_number,),
@@ -432,20 +520,25 @@ def create_part_on_demand(cur, system_part_number, part_number=None):
         result = cur.fetchone()
 
         if result:
-            result_bpn = result['base_part_number'] if isinstance(result, dict) else result[0]
-            print(f"Part {system_part_number} already exists, returning existing base_part_number")
+            result_bpn = (
+                result["base_part_number"] if isinstance(result, dict) else result[0]
+            )
+            print(
+                f"Part {system_part_number} already exists, returning existing base_part_number"
+            )
             return result_bpn
 
         # If we get here, something else went wrong
         raise
 
 
-@stock_movements_bp.route('/import', methods=['GET'])
+@stock_movements_bp.route("/import", methods=["GET"])
 def import_stock_movements_page():
     """Show stock movement import page and list existing files"""
     try:
-        rows = db_execute(
-            """
+        rows = (
+            db_execute(
+                """
             SELECT f.id, f.filename, f.upload_date,
                    EXISTS(
                         SELECT 1
@@ -455,42 +548,49 @@ def import_stock_movements_page():
             FROM files f
             ORDER BY f.upload_date DESC
             """,
-            fetch='all'
-        ) or []
+                fetch="all",
+            )
+            or []
+        )
 
         files = [
             {
-                'id': r['id'] if isinstance(r, dict) else r[0],
-                'filename': r['filename'] if isinstance(r, dict) else r[1],
-                'upload_date': r['upload_date'] if isinstance(r, dict) else r[2],
-                'import_status': r['import_status'] if isinstance(r, dict) else r[3],
+                "id": r["id"] if isinstance(r, dict) else r[0],
+                "filename": r["filename"] if isinstance(r, dict) else r[1],
+                "upload_date": r["upload_date"] if isinstance(r, dict) else r[2],
+                "import_status": r["import_status"] if isinstance(r, dict) else r[3],
             }
             for r in rows
         ]
 
-        return render_template('stock_movement_imports.html', files=files)
+        return render_template("stock_movement_imports.html", files=files)
 
     except Exception as e:
         return f"Database error: {str(e)}"
-@stock_movements_bp.route('/import/upload', methods=['POST'])
+
+
+@stock_movements_bp.route("/import/upload", methods=["POST"])
 def upload_stock_movement_file():
     """Handle file upload for stock movements"""
-    if 'file' not in request.files:
+    if "file" not in request.files:
         return jsonify(success=False, message="No file provided"), 400
 
-    file = request.files['file']
-    if file.filename == '':
+    file = request.files["file"]
+    if file.filename == "":
         return jsonify(success=False, message="No file selected"), 400
 
-    if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
-        return jsonify(success=False, message="Only Excel (.xlsx, .xls) and CSV (.csv) files are allowed"), 400
+    if not file.filename.endswith((".xlsx", ".xls", ".csv")):
+        return jsonify(
+            success=False,
+            message="Only Excel (.xlsx, .xls) and CSV (.csv) files are allowed",
+        ), 400
 
     try:
         # Secure the filename
         filename = secure_filename(file.filename)
 
         # Generate the file path (ensure the uploads directory exists)
-        upload_dir = os.path.join('uploads')
+        upload_dir = os.path.join("uploads")
         os.makedirs(upload_dir, exist_ok=True)
 
         # Generate unique filename if needed
@@ -523,26 +623,26 @@ def upload_stock_movement_file():
         return jsonify(success=False, message="Error uploading file"), 500
 
 
-@stock_movements_bp.route('/import/mapping/<int:file_id>', methods=['GET'])
+@stock_movements_bp.route("/import/mapping/<int:file_id>", methods=["GET"])
 def stock_movement_mapping(file_id):
     """Render the stock movement mapping interface for a specific file"""
     try:
         file_row = db_execute(
             "SELECT id, filepath FROM files WHERE id = ?",
             (file_id,),
-            fetch='one',
+            fetch="one",
         )
         if not file_row:
             return "File not found", 404
 
-        filepath = file_row['filepath'] if isinstance(file_row, dict) else file_row[1]
+        filepath = file_row["filepath"] if isinstance(file_row, dict) else file_row[1]
 
         # Ensure the file exists
         if not os.path.exists(filepath):
             return "File path does not exist", 404
 
         # Read the Excel file with explicit header specification
-        if filepath.endswith('.xls') or filepath.endswith('.xlsx'):
+        if filepath.endswith(".xls") or filepath.endswith(".xlsx"):
             # Read with header=0 to explicitly tell pandas that the first row is headers
             df = pd.read_excel(filepath, header=0)
 
@@ -564,56 +664,95 @@ def stock_movement_mapping(file_id):
                 df_with_index = df.copy()
                 for col in df_with_index.columns:
                     if pd.api.types.is_datetime64_any_dtype(df_with_index[col]):
-                        df_with_index[col] = df_with_index[col].astype(str).replace('NaT', '')
+                        df_with_index[col] = (
+                            df_with_index[col].astype(str).replace("NaT", "")
+                        )
 
-                df_with_index['row_index'] = df.index
-                data = df_with_index.fillna('').to_dict('records')
+                df_with_index["row_index"] = df.index
+                data = df_with_index.fillna("").to_dict("records")
 
                 # Log for debugging
                 print(f"Read file: {filepath}")
                 print(f"Found columns: {columns}")
                 print(f"First row data: {data[0] if data else 'No data'}")
 
-                mapping_rows = db_execute(
-                    """
+                mapping_rows = (
+                    db_execute(
+                        """
                     SELECT id, name, mapping
                     FROM import_column_maps
                     WHERE import_type = 'stock_movements'
                     ORDER BY name
                     """,
-                    fetch='all',
-                ) or []
+                        fetch="all",
+                    )
+                    or []
+                )
 
                 saved_mappings = [
                     {
-                        'id': r['id'] if isinstance(r, dict) else r[0],
-                        'name': r['name'] if isinstance(r, dict) else r[1],
-                        'mapping': r['mapping'] if isinstance(r, dict) else r[2],
+                        "id": r["id"] if isinstance(r, dict) else r[0],
+                        "name": r["name"] if isinstance(r, dict) else r[1],
+                        "mapping": r["mapping"] if isinstance(r, dict) else r[2],
                     }
                     for r in mapping_rows
                 ]
 
                 # Define fields for mapping
                 mapping_fields = [
-                    {'field': 'part_numbers.system_part_number', 'label': 'System Part Number', 'required': True},
-                    {'field': 'part_numbers.part_number', 'label': 'Part Number', 'required': False},
-                    {'field': 'stock_movements.movement_type', 'label': 'Movement Type', 'required': True},
-                    {'field': 'stock_movements.quantity', 'label': 'Quantity', 'required': True},
-                    {'field': 'stock_movements.datecode', 'label': 'Date Code', 'required': False},
-                    {'field': 'stock_movements.cost_per_unit', 'label': 'Cost Per Unit', 'required': False},
-                    {'field': 'stock_movements.reference', 'label': 'Reference', 'required': False},
-                    {'field': 'stock_movements.notes', 'label': 'Notes', 'required': False}
+                    {
+                        "field": "part_numbers.system_part_number",
+                        "label": "System Part Number",
+                        "required": True,
+                    },
+                    {
+                        "field": "part_numbers.part_number",
+                        "label": "Part Number",
+                        "required": False,
+                    },
+                    {
+                        "field": "stock_movements.movement_type",
+                        "label": "Movement Type",
+                        "required": True,
+                    },
+                    {
+                        "field": "stock_movements.quantity",
+                        "label": "Quantity",
+                        "required": True,
+                    },
+                    {
+                        "field": "stock_movements.datecode",
+                        "label": "Date Code",
+                        "required": False,
+                    },
+                    {
+                        "field": "stock_movements.cost_per_unit",
+                        "label": "Cost Per Unit",
+                        "required": False,
+                    },
+                    {
+                        "field": "stock_movements.reference",
+                        "label": "Reference",
+                        "required": False,
+                    },
+                    {
+                        "field": "stock_movements.notes",
+                        "label": "Notes",
+                        "required": False,
+                    },
                 ]
 
                 print(f"Column datatypes: {df.dtypes}")
                 print(f"First few rows:\n{df.head()}")
-                return render_template('stock_movement_mapping.html',
-                                       file_data=data,
-                                       columns=columns,
-                                       mapping_fields=mapping_fields,
-                                       saved_mappings=saved_mappings,
-                                       file_id=file_id,
-                                       enumerate=enumerate)
+                return render_template(
+                    "stock_movement_mapping.html",
+                    file_data=data,
+                    columns=columns,
+                    mapping_fields=mapping_fields,
+                    saved_mappings=saved_mappings,
+                    file_id=file_id,
+                    enumerate=enumerate,
+                )
             else:
                 return "File appears to be empty", 400
 
@@ -623,13 +762,14 @@ def stock_movement_mapping(file_id):
         print(f"Error in stock_movement_mapping: {str(e)}")
         return f"Error: {str(e)}", 500
 
-@stock_movements_bp.route('/import/process', methods=['POST'])
+
+@stock_movements_bp.route("/import/process", methods=["POST"])
 def process_stock_movement_import():
     """Process stock movement data from the import file"""
     data = request.get_json()
-    mapping = data.get('mapping')
-    file_id = data.get('file_id')
-    clear_existing = data.get('clear_existing', False)
+    mapping = data.get("mapping")
+    file_id = data.get("file_id")
+    clear_existing = data.get("clear_existing", False)
 
     if not mapping or not file_id:
         return jsonify(success=False, message="Missing mapping or file_id"), 400
@@ -637,22 +777,28 @@ def process_stock_movement_import():
     try:
         with db_cursor(commit=True) as cur:
             # Get file details
-            _execute_with_cursor(cur, "SELECT filepath FROM files WHERE id = ?", (file_id,))
+            _execute_with_cursor(
+                cur, "SELECT filepath FROM files WHERE id = ?", (file_id,)
+            )
             file_details = cur.fetchone()
             if not file_details:
                 return jsonify(success=False, message="File not found"), 404
 
-            filepath = file_details['filepath'] if isinstance(file_details, dict) else file_details[0]
+            filepath = (
+                file_details["filepath"]
+                if isinstance(file_details, dict)
+                else file_details[0]
+            )
 
         # Read Excel file
         df = pd.read_excel(filepath)
 
         results = {
-            'processed': 0,
-            'created': 0,
-            'skipped': 0,
-            'cleared': 0,
-            'errors': []
+            "processed": 0,
+            "created": 0,
+            "skipped": 0,
+            "cleared": 0,
+            "errors": [],
         }
 
         # If clear existing is requested
@@ -666,68 +812,98 @@ def process_stock_movement_import():
                         WHERE reference LIKE 'IMPORT-%'
                         """,
                     )
-                    results['cleared'] = getattr(cur, 'rowcount', 0) or 0
+                    results["cleared"] = getattr(cur, "rowcount", 0) or 0
                 print(f"Cleared {results['cleared']} existing stock movements")
             except Exception as e:
-                return jsonify(success=False, message=f"Error clearing existing movements: {str(e)}"), 500
+                return jsonify(
+                    success=False,
+                    message=f"Error clearing existing movements: {str(e)}",
+                ), 500
 
         # Get required mapped column indices
         try:
             # At least one part number field is required
             part_number_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'part_numbers.part_number'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "part_numbers.part_number"
+                ),
+                None,
             )
 
             system_part_number_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'part_numbers.system_part_number'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "part_numbers.system_part_number"
+                ),
+                None,
             )
 
             if part_number_col is None and system_part_number_col is None:
-                return jsonify(success=False, message="Either Part Number or System Part Number must be mapped"), 400
+                return jsonify(
+                    success=False,
+                    message="Either Part Number or System Part Number must be mapped",
+                ), 400
 
             movement_type_col = next(
-                int(col) for col, field in mapping.items()
-                if field == 'stock_movements.movement_type'
+                int(col)
+                for col, field in mapping.items()
+                if field == "stock_movements.movement_type"
             )
 
             quantity_col = next(
-                int(col) for col, field in mapping.items()
-                if field == 'stock_movements.quantity'
+                int(col)
+                for col, field in mapping.items()
+                if field == "stock_movements.quantity"
             )
 
             # Optional fields
             datecode_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'stock_movements.datecode'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "stock_movements.datecode"
+                ),
+                None,
             )
 
             cost_per_unit_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'stock_movements.cost_per_unit'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "stock_movements.cost_per_unit"
+                ),
+                None,
             )
 
             reference_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'stock_movements.reference'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "stock_movements.reference"
+                ),
+                None,
             )
 
             notes_col = next(
-                (int(col) for col, field in mapping.items()
-                 if field == 'stock_movements.notes'),
-                None
+                (
+                    int(col)
+                    for col, field in mapping.items()
+                    if field == "stock_movements.notes"
+                ),
+                None,
             )
 
         except StopIteration:
-            return jsonify(success=False, message="Required fields not properly mapped"), 400
+            return jsonify(
+                success=False, message="Required fields not properly mapped"
+            ), 400
         except ValueError as e:
-            return jsonify(success=False, message=f"Invalid column index: {str(e)}"), 400
+            return jsonify(
+                success=False, message=f"Invalid column index: {str(e)}"
+            ), 400
 
         # Store pending stock updates to apply in a single batch at the end
         stock_updates = {}
@@ -767,35 +943,51 @@ def process_stock_movement_import():
                         base_part_number = result[0]
 
                 if base_part_number is None:
-                    results['errors'].append(f"Row {idx + 1}: Part not found")
-                    results['skipped'] += 1
+                    results["errors"].append(f"Row {idx + 1}: Part not found")
+                    results["skipped"] += 1
                     continue
 
                 # Get movement type
                 movement_type = str(row.iloc[movement_type_col]).strip().upper()
 
                 # Standardize movement type
-                if movement_type not in ['IN', 'OUT']:
-                    if movement_type in ['INBOUND', 'RECEIPT', 'RECEIVE', 'ADD', 'STOCK IN']:
-                        movement_type = 'IN'
-                    elif movement_type in ['OUTBOUND', 'ISSUE', 'SHIP', 'REMOVE', 'STOCK OUT']:
-                        movement_type = 'OUT'
+                if movement_type not in ["IN", "OUT"]:
+                    if movement_type in [
+                        "INBOUND",
+                        "RECEIPT",
+                        "RECEIVE",
+                        "ADD",
+                        "STOCK IN",
+                    ]:
+                        movement_type = "IN"
+                    elif movement_type in [
+                        "OUTBOUND",
+                        "ISSUE",
+                        "SHIP",
+                        "REMOVE",
+                        "STOCK OUT",
+                    ]:
+                        movement_type = "OUT"
                     else:
-                        results['errors'].append(f"Row {idx + 1}: Invalid movement type: {movement_type}")
-                        results['skipped'] += 1
+                        results["errors"].append(
+                            f"Row {idx + 1}: Invalid movement type: {movement_type}"
+                        )
+                        results["skipped"] += 1
                         continue
 
                 # Get quantity
                 try:
                     quantity = float(str(row.iloc[quantity_col]).strip())
                 except (ValueError, TypeError):
-                    results['errors'].append(f"Row {idx + 1}: Invalid quantity format")
-                    results['skipped'] += 1
+                    results["errors"].append(f"Row {idx + 1}: Invalid quantity format")
+                    results["skipped"] += 1
                     continue
 
                 if quantity <= 0:
-                    results['errors'].append(f"Row {idx + 1}: Quantity must be positive")
-                    results['skipped'] += 1
+                    results["errors"].append(
+                        f"Row {idx + 1}: Quantity must be positive"
+                    )
+                    results["skipped"] += 1
                     continue
 
                 # Get optional fields
@@ -809,7 +1001,7 @@ def process_stock_movement_import():
                         cost_str = str(row.iloc[cost_per_unit_col]).strip()
                         if cost_str:
                             # Handle currency symbols and commas
-                            cost_str = cost_str.replace('$', '').replace(',', '')
+                            cost_str = cost_str.replace("$", "").replace(",", "")
                             cost_per_unit = float(cost_str)
                     except (ValueError, TypeError):
                         # Not critical, so just log but continue
@@ -826,7 +1018,7 @@ def process_stock_movement_import():
                     notes = str(row.iloc[notes_col]).strip()
 
                 # Process based on movement type
-                if movement_type == 'IN':
+                if movement_type == "IN":
                     # Add stock - insert movement record
                     _execute_with_cursor(
                         cur,
@@ -836,8 +1028,16 @@ def process_stock_movement_import():
                          cost_per_unit, reference, notes)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (base_part_number, 'IN', quantity, quantity, datecode,
-                         cost_per_unit, reference, notes),
+                        (
+                            base_part_number,
+                            "IN",
+                            quantity,
+                            quantity,
+                            datecode,
+                            cost_per_unit,
+                            reference,
+                            notes,
+                        ),
                     )
 
                     # Track stock update instead of immediately updating
@@ -846,7 +1046,7 @@ def process_stock_movement_import():
                     else:
                         stock_updates[base_part_number] = quantity
 
-                elif movement_type == 'OUT':
+                elif movement_type == "OUT":
                     # Check if there's enough stock
                     _execute_with_cursor(
                         cur,
@@ -862,8 +1062,10 @@ def process_stock_movement_import():
                         current_stock += stock_updates[base_part_number]
 
                     if current_stock < quantity:
-                        results['errors'].append(f"Row {idx + 1}: Insufficient stock for {base_part_number}")
-                        results['skipped'] += 1
+                        results["errors"].append(
+                            f"Row {idx + 1}: Insufficient stock for {base_part_number}"
+                        )
+                        results["skipped"] += 1
                         continue
 
                     # Find available stock using FIFO
@@ -891,10 +1093,9 @@ def process_stock_movement_import():
                             break
 
                         allocated = min(remaining_quantity, available)
-                        allocations.append({
-                            "movement_id": movement_id,
-                            "quantity": allocated
-                        })
+                        allocations.append(
+                            {"movement_id": movement_id, "quantity": allocated}
+                        )
 
                         # Update available quantity
                         _execute_with_cursor(
@@ -907,8 +1108,10 @@ def process_stock_movement_import():
 
                     if remaining_quantity > 0:
                         # Rollback changes and skip this row
-                        results['errors'].append(f"Row {idx + 1}: Insufficient available stock for {base_part_number}")
-                        results['skipped'] += 1
+                        results["errors"].append(
+                            f"Row {idx + 1}: Insufficient available stock for {base_part_number}"
+                        )
+                        results["skipped"] += 1
                         continue
 
                     # Insert OUT movement records for each allocation
@@ -920,8 +1123,14 @@ def process_stock_movement_import():
                             (base_part_number, movement_type, quantity, parent_movement_id, reference, notes)
                             VALUES (?, ?, ?, ?, ?, ?)
                             """,
-                            (base_part_number, 'OUT', allocation["quantity"], allocation["movement_id"], reference,
-                             notes),
+                            (
+                                base_part_number,
+                                "OUT",
+                                allocation["quantity"],
+                                allocation["movement_id"],
+                                reference,
+                                notes,
+                            ),
                         )
 
                     # Track stock update instead of immediately updating
@@ -930,13 +1139,13 @@ def process_stock_movement_import():
                     else:
                         stock_updates[base_part_number] = -quantity
 
-                results['processed'] += 1
-                results['created'] += 1
+                results["processed"] += 1
+                results["created"] += 1
 
             except Exception as e:
                 print(f"Error processing row {idx + 1}: {e}")
-                results['errors'].append(f"Row {idx + 1}: {str(e)}")
-                results['skipped'] += 1
+                results["errors"].append(f"Row {idx + 1}: {str(e)}")
+                results["skipped"] += 1
                 continue
 
             # Now apply all stock updates in a single batch
@@ -964,13 +1173,13 @@ def process_stock_movement_import():
                 """,
                 (
                     file_id,
-                    'stock_movements',
-                    results['processed'],
-                    results['created'],
+                    "stock_movements",
+                    results["processed"],
+                    results["created"],
                     0,  # No updates, only creations
-                    results['skipped'],
-                    str(results['errors']),
-                    'completed',
+                    results["skipped"],
+                    str(results["errors"]),
+                    "completed",
                 ),
             )
 
@@ -981,12 +1190,13 @@ def process_stock_movement_import():
         return jsonify(success=False, message=str(e)), 500
 
 
-@stock_movements_bp.route('/upload-stock-levels', methods=['GET'])
+@stock_movements_bp.route("/upload-stock-levels", methods=["GET"])
 def upload_stock_levels_page():
     """Show stock levels upload page"""
     try:
-        rows = db_execute(
-            """
+        rows = (
+            db_execute(
+                """
             SELECT f.id, f.filename, f.upload_date,
                    EXISTS(
                      SELECT 1 FROM import_status
@@ -995,38 +1205,40 @@ def upload_stock_levels_page():
             FROM files f
             ORDER BY f.upload_date DESC
             """,
-            fetch='all',
-        ) or []
+                fetch="all",
+            )
+            or []
+        )
 
         files = [
             {
-                'id': r['id'] if isinstance(r, dict) else r[0],
-                'filename': r['filename'] if isinstance(r, dict) else r[1],
-                'upload_date': r['upload_date'] if isinstance(r, dict) else r[2],
-                'import_status': r['import_status'] if isinstance(r, dict) else r[3],
+                "id": r["id"] if isinstance(r, dict) else r[0],
+                "filename": r["filename"] if isinstance(r, dict) else r[1],
+                "upload_date": r["upload_date"] if isinstance(r, dict) else r[2],
+                "import_status": r["import_status"] if isinstance(r, dict) else r[3],
             }
             for r in rows
         ]
 
-        return render_template('stock_levels_upload.html', files=files)
+        return render_template("stock_levels_upload.html", files=files)
 
     except Exception as e:
         return f"Database error: {str(e)}"
 
 
-@stock_movements_bp.route('/upload-stock-levels/mapping/<int:file_id>', methods=['GET'])
+@stock_movements_bp.route("/upload-stock-levels/mapping/<int:file_id>", methods=["GET"])
 def stock_levels_mapping(file_id):
     """Render the stock levels mapping interface - now processes CSV directly"""
     try:
         file_row = db_execute(
             "SELECT id, filepath FROM files WHERE id = ?",
             (file_id,),
-            fetch='one',
+            fetch="one",
         )
         if not file_row:
             return "File not found", 404
 
-        filepath = file_row['filepath'] if isinstance(file_row, dict) else file_row[1]
+        filepath = file_row["filepath"] if isinstance(file_row, dict) else file_row[1]
 
         if not os.path.exists(filepath):
             return "File path does not exist", 404
@@ -1043,20 +1255,30 @@ def stock_levels_mapping(file_id):
             df_with_index = df.copy()
             for col in df_with_index.columns:
                 if pd.api.types.is_datetime64_any_dtype(df_with_index[col]):
-                    df_with_index[col] = df_with_index[col].astype(str).replace('NaT', '')
+                    df_with_index[col] = (
+                        df_with_index[col].astype(str).replace("NaT", "")
+                    )
 
-            df_with_index['row_index'] = df.index
-            data = df_with_index.fillna('').to_dict('records')
+            df_with_index["row_index"] = df.index
+            data = df_with_index.fillna("").to_dict("records")
 
             # Define simpler fields for stock levels
             mapping_fields = [
-                {'field': 'part_number', 'label': 'Part Number', 'required': True},
-                {'field': 'stock_quantity', 'label': 'Stock Quantity', 'required': True},
-                {'field': 'unit_price', 'label': 'Unit Price (optional)', 'required': False}
+                {"field": "part_number", "label": "Part Number", "required": True},
+                {
+                    "field": "stock_quantity",
+                    "label": "Stock Quantity",
+                    "required": True,
+                },
+                {
+                    "field": "unit_price",
+                    "label": "Unit Price (optional)",
+                    "required": False,
+                },
             ]
 
             return render_template(
-                'stock_levels_mapping.html',
+                "stock_levels_mapping.html",
                 file_data=data,
                 columns=columns,
                 mapping_fields=mapping_fields,
@@ -1071,34 +1293,40 @@ def stock_levels_mapping(file_id):
         return f"Error: {str(e)}", 500
 
 
-@stock_movements_bp.route('/upload-stock-levels/process', methods=['POST'])
+@stock_movements_bp.route("/upload-stock-levels/process", methods=["POST"])
 def process_stock_levels_upload():
     """Process stock levels upload by rebuilding part_numbers.stock from uploaded file."""
     data = request.get_json()
-    file_id = data.get('file_id')
-    mapping = data.get('mapping') or {}
+    file_id = data.get("file_id")
+    mapping = data.get("mapping") or {}
 
     if not file_id:
         return jsonify(success=False, message="Missing file_id"), 400
 
     try:
         with db_cursor(commit=True) as cur:
-            _execute_with_cursor(cur, "SELECT filepath FROM files WHERE id = ?", (file_id,))
+            _execute_with_cursor(
+                cur, "SELECT filepath FROM files WHERE id = ?", (file_id,)
+            )
             file_details = cur.fetchone()
             if not file_details:
                 return jsonify(success=False, message="File not found"), 404
 
-            filepath = file_details['filepath'] if isinstance(file_details, dict) else file_details[0]
+            filepath = (
+                file_details["filepath"]
+                if isinstance(file_details, dict)
+                else file_details[0]
+            )
 
         # Read CSV file
         df = pd.read_csv(filepath)
 
         results = {
-            'processed': 0,
-            'created': 0,
-            'deleted': 0,
-            'not_found': 0,
-            'errors': []
+            "processed": 0,
+            "created": 0,
+            "deleted": 0,
+            "not_found": 0,
+            "errors": [],
         }
 
         # Resolve mapped columns (mapping values are column indices from UI).
@@ -1114,21 +1342,24 @@ def process_stock_levels_upload():
                 return None
             return df.columns[idx]
 
-        part_col = _mapped_column_name('part_number') or 'partNumber'
-        qty_col = _mapped_column_name('stock_quantity') or 'remainingQty'
-        cost_col = _mapped_column_name('unit_price') or 'unitCost'
+        part_col = _mapped_column_name("part_number") or "partNumber"
+        qty_col = _mapped_column_name("stock_quantity") or "remainingQty"
+        cost_col = _mapped_column_name("unit_price") or "unitCost"
 
         required_cols = [part_col, qty_col]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             missing_list = ", ".join(missing_cols)
-            return jsonify(success=False, message=f"Required column(s) '{missing_list}' not found in file"), 400
+            return jsonify(
+                success=False,
+                message=f"Required column(s) '{missing_list}' not found in file",
+            ), 400
 
         # First pass: collapse duplicate part numbers by normalized base part number.
         aggregated_stock = {}
         for idx, row in df.iterrows():
-            raw_part_number = str(row.get(part_col, '')).strip()
-            if not raw_part_number or raw_part_number.lower() in ['nan', 'none']:
+            raw_part_number = str(row.get(part_col, "")).strip()
+            if not raw_part_number or raw_part_number.lower() in ["nan", "none"]:
                 continue
 
             base_part_number = create_base_part_number(raw_part_number)
@@ -1136,21 +1367,21 @@ def process_stock_levels_upload():
                 continue
 
             try:
-                quantity = float(str(row.get(qty_col, '')).strip())
+                quantity = float(str(row.get(qty_col, "")).strip())
             except (ValueError, TypeError):
-                results['errors'].append(f"Row {idx + 1}: Invalid quantity format")
+                results["errors"].append(f"Row {idx + 1}: Invalid quantity format")
                 continue
 
             if quantity < 0:
-                results['errors'].append(f"Row {idx + 1}: Quantity cannot be negative")
+                results["errors"].append(f"Row {idx + 1}: Quantity cannot be negative")
                 continue
 
             unit_price = None
             if cost_col in df.columns:
                 try:
-                    price_str = str(row.get(cost_col, '')).strip()
-                    if price_str and price_str.lower() not in ['nan', 'none', '']:
-                        price_str = price_str.replace('$', '').replace(',', '')
+                    price_str = str(row.get(cost_col, "")).strip()
+                    if price_str and price_str.lower() not in ["nan", "none", ""]:
+                        price_str = price_str.replace("$", "").replace(",", "")
                         unit_price = float(price_str)
                 except (ValueError, TypeError):
                     unit_price = None
@@ -1158,17 +1389,17 @@ def process_stock_levels_upload():
             entry = aggregated_stock.setdefault(
                 base_part_number,
                 {
-                    'quantity': 0.0,
-                    'sample_part_number': raw_part_number,
-                    'cost_quantity': 0.0,
-                    'cost_total': 0.0,
-                }
+                    "quantity": 0.0,
+                    "sample_part_number": raw_part_number,
+                    "cost_quantity": 0.0,
+                    "cost_total": 0.0,
+                },
             )
-            entry['quantity'] += quantity
+            entry["quantity"] += quantity
             if unit_price is not None and quantity > 0:
-                entry['cost_quantity'] += quantity
-                entry['cost_total'] += unit_price * quantity
-            results['processed'] += 1
+                entry["cost_quantity"] += quantity
+                entry["cost_total"] += unit_price * quantity
+            results["processed"] += 1
 
         # Run destructive reset inside a transaction
         conn = get_db_connection()
@@ -1177,8 +1408,9 @@ def process_stock_levels_upload():
             # NUKE EVERYTHING - Delete ALL stock movements (no conditions)
             _execute_with_cursor(cur, "SELECT COUNT(*) FROM stock_movements")
             count_row = cur.fetchone()
-            results['deleted'] = (
-                count_row.get('count') if isinstance(count_row, dict) and 'count' in count_row
+            results["deleted"] = (
+                count_row.get("count")
+                if isinstance(count_row, dict) and "count" in count_row
                 else (count_row[0] if count_row else 0)
             )
 
@@ -1192,8 +1424,8 @@ def process_stock_levels_upload():
 
             # Rebuild stock totals by base part number from collapsed import values.
             for base_part_number, values in aggregated_stock.items():
-                quantity = values['quantity']
-                sample_part_number = values['sample_part_number']
+                quantity = values["quantity"]
+                sample_part_number = values["sample_part_number"]
                 if quantity <= 0:
                     continue
 
@@ -1206,8 +1438,10 @@ def process_stock_levels_upload():
                     part_row = cur.fetchone()
 
                     if not part_row:
-                        create_part_on_demand(cur, sample_part_number, sample_part_number)
-                        results['not_found'] += 1
+                        create_part_on_demand(
+                            cur, sample_part_number, sample_part_number
+                        )
+                        results["not_found"] += 1
 
                     _execute_with_cursor(
                         cur,
@@ -1217,8 +1451,8 @@ def process_stock_levels_upload():
 
                     # Keep one synthetic stock movement per base part for legacy stock views.
                     average_cost = None
-                    if values['cost_quantity'] > 0:
-                        average_cost = values['cost_total'] / values['cost_quantity']
+                    if values["cost_quantity"] > 0:
+                        average_cost = values["cost_total"] / values["cost_quantity"]
 
                     _execute_with_cursor(
                         cur,
@@ -1230,7 +1464,7 @@ def process_stock_levels_upload():
                         """,
                         (
                             base_part_number,
-                            'IN',
+                            "IN",
                             quantity,
                             quantity,
                             average_cost,
@@ -1239,9 +1473,9 @@ def process_stock_levels_upload():
                         ),
                     )
 
-                    results['created'] += 1
+                    results["created"] += 1
                 except Exception as e:
-                    results['errors'].append(f"Base {base_part_number}: {str(e)}")
+                    results["errors"].append(f"Base {base_part_number}: {str(e)}")
                     conn.rollback()
                     try:
                         cur.close()
@@ -1259,13 +1493,13 @@ def process_stock_levels_upload():
                 """,
                 (
                     file_id,
-                    'stock_levels',
-                    results['processed'],
-                    results['created'],
+                    "stock_levels",
+                    results["processed"],
+                    results["created"],
                     0,
                     0,
-                    str(results['errors']),
-                    'completed',
+                    str(results["errors"]),
+                    "completed",
                 ),
             )
 
