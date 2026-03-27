@@ -212,6 +212,114 @@ sensitive or environment-specific content.
 
 ---
 
+### Cross-platform bug fixes
+
+Five platform-specific bugs were found and fixed during the cross-platform review.
+None of these affected application logic — they were silent failures or hard crashes
+depending on operating system.
+
+#### 1. `routes/customers.py` — `country_name_mapping.json` path never resolved
+
+The path built to find the JSON file contained an erroneous `..` segment:
+
+```
+os.path.join(current_app.root_path, "..", "data", "country_name_mapping.json")
+```
+
+`current_app.root_path` in Flask is the directory that contains `app.py` (i.e.
+the project root, `crm/`). Appending `..` steps *above* the project root, so the
+resolved path was `<parent-of-crm>/data/country_name_mapping.json`, which does
+not exist on any machine. The file was silently never found and fell through to
+the legacy fallback path (also wrong for the same reason), ultimately failing to
+load on a clean deployment.
+
+**Fix:** removed the `..` so the primary path is
+`os.path.join(current_app.root_path, "data", "country_name_mapping.json")`,
+which correctly resolves to `crm/data/country_name_mapping.json`. The single
+remaining legacy fallback (`current_app.root_path` directly) is kept for
+deployments that haven't moved the file yet.
+
+---
+
+#### 2. `models/part_2.py` — hardcoded Windows `wkhtmltopdf` path
+
+```python
+# Before
+path_to_wkhtmltopdf = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+config = pdfkit.configuration(wkhtmltopdf=path_to_wkhtmltopdf)
+pdfkit.from_string(rendered_html, file_path, configuration=config)
+```
+
+This caused an immediate `OSError` on Linux/macOS because the path does not
+exist there. On Linux, `wkhtmltopdf` is typically installed on the system `PATH`
+(e.g. via `apt install wkhtmltopdf`) so no explicit path is required.
+
+**Fix:** the path is now resolved in priority order:
+
+1. `WKHTMLTOPDF_PATH` environment variable (works on both OS, recommended for
+   non-standard install locations).
+2. `C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe` only when `os.name == "nt"`
+   (Windows default install path).
+3. No explicit path — lets `pdfkit` find the binary on `PATH` (Linux/macOS
+   default behaviour).
+
+Add `WKHTMLTOPDF_PATH` to your `.env` if you install `wkhtmltopdf` to a
+non-standard location on either OS.
+
+---
+
+#### 3. `routes/sales_orders.py` — hardcoded `/tmp/` temp directory
+
+```python
+# Before
+pdf_file_path = f"/tmp/acknowledgment_{sales_order_id}.pdf"
+```
+
+`/tmp` is a Linux/macOS convention. On Windows the equivalent is `%TEMP%` /
+`%TMP%` (e.g. `C:\Users\<user>\AppData\Local\Temp`), and `/tmp` either does not
+exist or is not writable.
+
+**Fix:** replaced with `os.path.join(tempfile.gettempdir(), ...)`, which returns
+the correct platform temp directory on both operating systems. `tempfile` was
+added to the imports.
+
+---
+
+#### 4. `ai_helper.py` — wrong `.env` loading path
+
+The file contained a stale comment and a path that was off by one directory level:
+
+```python
+# Before (comment was wrong, logic was wrong)
+current_dir = Path(__file__).parent  # C:\crm\routes  ← wrong, file is at root
+parent_dir = current_dir.parent      # C:\crm          ← one level too high
+env_path = parent_dir / ".env"       # resolves above the project root
+```
+
+`ai_helper.py` lives at the project root (`crm/`), not inside `routes/`. The
+comment was copied from an earlier location of the file and never updated.
+`Path(__file__).parent` already *is* the project root, so the extra `.parent`
+step pointed one directory above `crm/`. The `.env` was never loaded from this
+call (it succeeded only because `app.py` calls `load_dotenv()` earlier, before
+any module is imported).
+
+**Fix:** removed the extra `.parent` step and updated the comment:
+
+```python
+project_root = Path(__file__).parent
+env_path = project_root / ".env"
+```
+
+---
+
+#### 5. `routes/offers.py` — unused `import platform`
+
+`import platform` appeared at the top of the file but the `platform` module was
+never referenced anywhere in the file. Removed to keep the import block clean
+and avoid confusion about where platform-specific code lives.
+
+---
+
 ### How to reinstall dependencies after this change
 
 If you are working in an existing virtual environment, the safest approach is to
