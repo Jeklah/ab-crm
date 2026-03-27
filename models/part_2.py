@@ -474,9 +474,18 @@ def generate_sales_order_acknowledgment_file(sales_order):
         },
     )
 
-    path_to_wkhtmltopdf = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
-    config = pdfkit.configuration(wkhtmltopdf=path_to_wkhtmltopdf)
-    pdfkit.from_string(rendered_html, file_path, configuration=config)
+    # Resolve wkhtmltopdf binary path.
+    # Priority: WKHTMLTOPDF_PATH env var → platform default → let pdfkit find it on PATH.
+    # On Linux/macOS wkhtmltopdf is normally installed on PATH (e.g. via apt/brew)
+    # so no explicit path is needed. On Windows it must be provided.
+    _wkhtmltopdf = os.getenv("WKHTMLTOPDF_PATH")
+    if not _wkhtmltopdf and os.name == "nt":
+        _wkhtmltopdf = r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+    if _wkhtmltopdf:
+        config = pdfkit.configuration(wkhtmltopdf=_wkhtmltopdf)
+        pdfkit.from_string(rendered_html, file_path, configuration=config)
+    else:
+        pdfkit.from_string(rendered_html, file_path)
     return file_path
 
 

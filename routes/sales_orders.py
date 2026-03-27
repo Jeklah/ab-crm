@@ -1,5 +1,6 @@
 import datetime
 import os
+import tempfile
 from urllib.parse import quote
 
 from flask import (
@@ -585,8 +586,10 @@ def sales_order_acknowledgment(sales_order_id):
     )
 
     # Convert the rendered HTML to a PDF file (using pdfkit, wkhtmltopdf, etc.)
-    pdf_file_path = (
-        f"/tmp/acknowledgment_{sales_order_id}.pdf"  # Save to a temp directory
+    # Use tempfile.gettempdir() instead of a hardcoded /tmp/ path so this works
+    # on both Linux (/tmp) and Windows (%TEMP% / %TMP%).
+    pdf_file_path = os.path.join(
+        tempfile.gettempdir(), f"acknowledgment_{sales_order_id}.pdf"
     )
     pdfkit.from_string(rendered_html, pdf_file_path)
 

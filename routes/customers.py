@@ -438,16 +438,13 @@ def edit_customer(customer_id):
             # country_name_mapping.json was moved to data/ during the Jan 2026 cleanup.
             # We try data/ first, then fall back to the project root so older deployments
             # that have not yet moved the file continue to work without changes.
+            # Primary location: data/ subdirectory inside the project root.
             json_path = os.path.join(
-                current_app.root_path, "..", "data", "country_name_mapping.json"
+                current_app.root_path, "data", "country_name_mapping.json"
             )
             if not os.path.exists(json_path):
-                # Legacy fallback: one level up from the Flask root (project root)
-                json_path = os.path.join(
-                    current_app.root_path, "..", "country_name_mapping.json"
-                )
-            if not os.path.exists(json_path):
-                # Last resort: same directory as the Flask root
+                # Legacy fallback: file was kept at the project root before the
+                # Jan 2026 cleanup moved it to data/. Keeps older deployments working.
                 json_path = os.path.join(
                     current_app.root_path, "country_name_mapping.json"
                 )

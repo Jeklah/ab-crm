@@ -18,10 +18,12 @@ from models import (
     get_db_connection,
 )
 
-# Load .env from the parent directory (where it actually exists)
-current_dir = Path(__file__).parent  # C:\crm\routes
-parent_dir = current_dir.parent  # C:\crm
-env_path = parent_dir / ".env"
+# ai_helper.py lives at the project root, so Path(__file__).parent IS the
+# project root — the same directory that contains the .env file.
+# (A previous version of this file lived in routes/ and used .parent.parent;
+# that extra level has been removed.)
+project_root = Path(__file__).parent
+env_path = project_root / ".env"
 load_dotenv(dotenv_path=env_path)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
